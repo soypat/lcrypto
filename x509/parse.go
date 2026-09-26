@@ -33,7 +33,7 @@ const (
 	RSA                                          // Verifiable: PublicKey is the modulus, RSAExponent the exponent.
 	ECDSAP256                                    // Verifiable: PublicKey is the uncompressed point.
 	ECDSAP224                                    // Parsed, not verifiable.
-	ECDSAP384                                    // Parsed, not verifiable.
+	ECDSAP384                                    // Verifiable: PublicKey is the uncompressed point.
 	ECDSAP521                                    // Parsed, not verifiable.
 	Ed25519                                      // Parsed, not verifiable.
 	DSA                                          // Parsed, not verifiable.
@@ -550,8 +550,8 @@ func isIA5(v []byte) bool {
 }
 
 // parsePublicKey is parsePublicKey's validation. Elliptic curve points are
-// checked for length and form only: a Verifier checks P-256 points when it
-// uses them, and cannot use other curves.
+// checked for length and form only: a Verifier checks P-256 and P-384 points
+// when it uses them, and cannot use other curves.
 func (c *Certificate) parsePublicKey(oid, params, data []byte, padding uint8) error {
 	switch {
 	case bytes.Equal(oid, oidPublicKeyRSA):

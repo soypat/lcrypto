@@ -216,6 +216,9 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 			return err
 		}
 	}
+	if err := ts.valueFields(ps, jobs); err != nil {
+		return err
+	}
 	jobs, err = ts.typedRules(root, ps, jobs)
 	if err != nil {
 		return err

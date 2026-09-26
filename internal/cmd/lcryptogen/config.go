@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // Pinned inputs. Changing these requires `lcryptogen fetch` then `lcryptogen -update-manifest`.
 const (
 	goVersion      = "go1.27.1"
@@ -34,6 +36,9 @@ type pkgSpec struct {
 	Hoists []hoist
 	// FieldArrays turn slice fields into fixed arrays, see [rewriter.fieldArrays].
 	FieldArrays []fieldArray
+	// ValueFields are struct types whose pointer fields become value fields, see
+	// [typedState.valueFields].
+	ValueFields []string
 	// Decls are declarations added to the package, i.e. a struct that Threads pass
 	// and Hoists fill with scratch space.
 	Decls []string
@@ -310,32 +315,41 @@ func keccakF1600Words(a *[25]uint64) {`,
 	{Src: "go:crypto/internal/fips140/edwards25519/field", Dst: "field"},
 	{
 		Src: "go:crypto/internal/fips140/nistec/fiat", Dst: "fiat",
-		DropFiles: []string{"cast.go", "p224*.go", "p384*.go", "p521*.go", "benchmark_test.go"},
+		DropFiles: []string{"cast.go", "p224*.go", "p521*.go", "benchmark_test.go"},
 	},
 	{
 		Src: "go:crypto/internal/fips140/nistec", Dst: "nistec",
-		DropFiles: []string{"p224*.go", "p384.go", "p521.go", "benchmark_test.go"},
-		Patches: []patch{
-			// Lazily allocated constant: compute it in place at init instead, without sync.
-			{
-				File: "p256.go",
-				Old:  "var _p256B *fiat.P256Element\nvar _p256BOnce sync.Once\n\nfunc p256B() *fiat.P256Element {\n\t_p256BOnce.Do(func() {\n\t\t_p256B, _ = new(fiat.P256Element).SetBytes([]byte{",
-				New:  "var _p256B fiat.P256Element\n\nfunc init() {\n\tb := [...]byte{",
-			},
-			{
-				File: "p256.go",
-				Old:  "0x27, 0xd2, 0x60, 0x4b})\n\t})\n\treturn _p256B\n}",
-				New:  "0x27, 0xd2, 0x60, 0x4b}\n\t_p256B.SetBytes(b[:])\n}\n\nfunc p256B() *fiat.P256Element { return &_p256B }",
-			},
+		DropFiles: []string{"p224*.go", "p521.go", "benchmark_test.go"},
+		// The 207 KiB P-384 generator table does not fit a microcontroller:
+		// multiply the generator with ScalarMult instead.
+		DropDecls:   []string{"p384GeneratorTable", "p384GeneratorTableOnce", "P384Point.generatorTable", "P384Point.ScalarBaseMult"},
+		ValueFields: []string{"P384Point"},
+		Patches: append(append(
+			lazyCurveB("p256", "0x27, 0xd2, 0x60, 0x4b"),
+			lazyCurveB("p384", "0xed, 0xd3, 0xec, 0x2a, 0xef")...),
 			// The 1.5 KiB window table cannot be hoisted into P256Point, which it is made
 			// of: take it as a parameter so callers can provide scratch space.
-			{
+			patch{
 				File: "p256.go", Decl: "P256Point.ScalarMult",
 				Old: "func (p *P256Point) ScalarMult(q *P256Point, scalar []byte) (*P256Point, error) {",
 				New: "func (p *P256Point) ScalarMult(q *P256Point, scalar []byte) (*P256Point, error) {\n\treturn p.scalarMult(q, scalar, new(p256Table))\n}\n\nfunc (p *P256Point) scalarMult(q *P256Point, scalar []byte, table *p256Table) (*P256Point, error) {",
 			},
-			{File: "p256.go", Old: "table := new(p256Table).Compute(q)", New: "table.Compute(q)"},
-		},
+			patch{File: "p256.go", Old: "table := new(p256Table).Compute(q)", New: "table.Compute(q)"},
+			// Likewise the 2 KiB P-384 table, which the ValueFields rule makes a value array.
+			patch{
+				File: "p384.go", Decl: "P384Point.ScalarMult",
+				Old: "func (p *P384Point) ScalarMult(q *P384Point, scalar []byte) (*P384Point, error) {\n" +
+					"\t// Compute a p384Table for the base point q. The explicit NewP384Point\n" +
+					"\t// calls get inlined, letting the allocations live on the stack.\n" +
+					"\tvar table = p384Table{NewP384Point(), NewP384Point(), NewP384Point(),\n" +
+					"\t\tNewP384Point(), NewP384Point(), NewP384Point(), NewP384Point(),\n" +
+					"\t\tNewP384Point(), NewP384Point(), NewP384Point(), NewP384Point(),\n" +
+					"\t\tNewP384Point(), NewP384Point(), NewP384Point(), NewP384Point()}",
+				New: "func (p *P384Point) ScalarMult(q *P384Point, scalar []byte) (*P384Point, error) {\n\treturn p.scalarMult(q, scalar, new(p384Table))\n}\n\n" +
+					"// scalarMult is ScalarMult with the caller's table memory, which it overwrites.\n" +
+					"func (p *P384Point) scalarMult(q *P384Point, scalar []byte, table *p384Table) (*P384Point, error) {",
+			},
+		),
 	},
 	{
 		// Nat keeps its limbs in a fixed array sized for 4096 bit numbers, the largest
@@ -613,3 +627,22 @@ const mulSpecialized = `	case 1024 / _W:
 		}
 		return x.Mod(&Nat{limbs: T}, m)
 `
+
+// lazyCurveB patches the lazily computed curve constant b of nistec's curve
+// file into one computed at init, without sync.Once. tail ends its bytes.
+func lazyCurveB(curve, tail string) []patch {
+	elem := "fiat." + strings.ToUpper(curve[:1]) + curve[1:] + "Element"
+	return []patch{
+		{
+			File: curve + ".go",
+			Old: "var _" + curve + "B *" + elem + "\nvar _" + curve + "BOnce sync.Once\n\nfunc " + curve + "B() *" + elem +
+				" {\n\t_" + curve + "BOnce.Do(func() {\n\t\t_" + curve + "B, _ = new(" + elem + ").SetBytes([]byte{",
+			New: "var _" + curve + "B " + elem + "\n\nfunc init() {\n\tb := [...]byte{",
+		},
+		{
+			File: curve + ".go",
+			Old:  tail + "})\n\t})\n\treturn _" + curve + "B\n}",
+			New:  tail + "}\n\t_" + curve + "B.SetBytes(b[:])\n}\n\nfunc " + curve + "B() *" + elem + " { return &_" + curve + "B }",
+		},
+	}
+}

@@ -45,6 +45,8 @@ func (p *pki) key(kind string) crypto.Signer {
 		return lt.RSAKey(p.t, 4096, 0)
 	case "p384":
 		return lt.ECKey(p.t, elliptic.P384())
+	case "p521":
+		return lt.ECKey(p.t, elliptic.P521())
 	}
 	return lt.ECKey(p.t, elliptic.P256())
 }
@@ -136,6 +138,11 @@ func TestVerifyChain(t *testing.T) {
 	root384 := p.issue("p384", "root P-384", true, nil, nil)
 	leaf384 := p.issue("ec", "leaf under P-384", false, root384, nil)
 	leafOf384 := p.issue("p384", "leaf P-384", false, rootEC, nil)
+	inter384 := p.issue("p384", "inter P-384", true, rootRSA, pss(x509.SHA256WithRSA))
+	leafOfInter384 := p.issue("ec", "leaf under P-384 inter", false, inter384, pss(x509.ECDSAWithSHA384))
+	leafOfInter384SHA512 := p.issue("ec", "leaf under P-384 SHA-512", false, inter384, pss(x509.ECDSAWithSHA512))
+	root521 := p.issue("p521", "root P-521", true, nil, nil)
+	leaf521 := p.issue("ec", "leaf under P-521", false, root521, nil)
 
 	expired := p.issue("ec", "expired", false, interEC, func(c *x509.Certificate) {
 		c.NotAfter = lt.Epoch.Add(-time.Second)
@@ -259,7 +266,11 @@ func TestVerifyChain(t *testing.T) {
 		{name: "name constrained CA", roots: certs(rootEC), chain: certs(leafOfNC, interNC), host: "example.com", unsupported: true},
 		{name: "name constrained leaf", roots: certs(rootEC), chain: certs(leafNC, interEC), host: "example.com"},
 		{name: "require explicit policy", roots: certs(rootEC), chain: certs(leafOfRequire, interRequire), unsupported: true},
-		{name: "P-384 CA", roots: certs(root384), chain: certs(leaf384), unsupported: true},
+		{name: "P-384 CA", roots: certs(root384), chain: certs(leaf384)},
+		{name: "P-384 intermediate", roots: certs(rootRSA), chain: certs(leafOfInter384, inter384), host: "example.com"},
+		{name: "P-384 with SHA-512", roots: certs(rootRSA), chain: certs(leafOfInter384SHA512, inter384)},
+		{name: "P-384 wrong root", roots: certs(rootEC), chain: certs(leafOfInter384, inter384), wantErr: true},
+		{name: "P-521 CA", roots: certs(root521), chain: certs(leaf521), unsupported: true},
 		{name: "P-384 leaf", roots: certs(rootEC), chain: certs(leafOf384)},
 	}
 	for _, c := range cases {
@@ -306,18 +317,20 @@ func mustOID(ints ...uint64) x509.OID {
 func TestVerifyPeer(t *testing.T) {
 	p := &pki{t: t}
 	root := p.issue("rsa", "root", true, nil, nil)
-	inter := p.issue("ec", "inter", true, root, nil)
+	inter := p.issue("p384", "inter", true, root, nil)
 	both := func(c *x509.Certificate) {
 		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
 	}
 	leafEC := p.issue("ec", "leaf EC", false, inter, both)
 	leafRSA := p.issue("rsa", "leaf RSA", false, inter, both)
+	leaf384 := p.issue("p384", "leaf P-384", false, inter, both)
 	transcript := make([]byte, 48)
 	for _, c := range []struct {
 		leaf   *lt.Cert
 		scheme uint16
 	}{
 		{leafEC, lx509.SchemeECDSAP256SHA256},
+		{leaf384, lx509.SchemeECDSAP384SHA384},
 		{leafRSA, lx509.SchemeRSAPSSSHA256},
 		{leafRSA, lx509.SchemeRSAPSSSHA384},
 		{leafRSA, lx509.SchemeRSAPSSSHA512},
@@ -348,6 +361,7 @@ func TestCertificateVerifyScheme(t *testing.T) {
 	leafEC := p.issue("ec", "leaf EC", false, root, nil)
 	leafRSA := p.issue("rsa", "leaf RSA", false, root, nil)
 	leaf384 := p.issue("p384", "leaf P-384", false, root, nil)
+	leaf521 := p.issue("p521", "leaf P-521", false, root, nil)
 	msg := lt.CertificateVerifyMsg(true, make([]byte, 32))
 	v := &lx509.Verifier{Roots: lt.Chain{root.DER}, Time: func() time.Time { return lt.Epoch }}
 	for _, c := range []struct {
@@ -360,7 +374,9 @@ func TestCertificateVerifyScheme(t *testing.T) {
 		{"RSA key as ECDSA", leafRSA, lx509.SchemeECDSAP256SHA256, 0x0804},
 		{"ECDSA key as RSA", leafEC, lx509.SchemeRSAPSSSHA256, 0x0403},
 		{"PSS hash mismatch", leafRSA, lx509.SchemeRSAPSSSHA256, 0x0805},
-		{"P-384", leaf384, 0x0503, 0x0503},
+		{"P-256 key as P-384", leafEC, lx509.SchemeECDSAP384SHA384, 0x0403},
+		{"P-384 key as P-256", leaf384, lx509.SchemeECDSAP256SHA256, 0x0503},
+		{"P-521", leaf521, 0x0603, 0x0603},
 	} {
 		sig := lt.SignCertificateVerify(t, c.leaf.Key, c.signScheme, msg)
 		if err := v.VerifyPeer(lt.Chain{c.leaf.DER}, c.scheme, true, []byte("example.com"), msg, sig); err == nil {

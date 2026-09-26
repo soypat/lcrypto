@@ -7,4 +7,5 @@ import "errors"
 // Errors hoisted out of function bodies so returning them does not allocate.
 var (
 	errInvalidP256ElementEncoding = errors.New("invalid P256Element encoding")
+	errInvalidP384ElementEncoding = errors.New("invalid P384Element encoding")
 )

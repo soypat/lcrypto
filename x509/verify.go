@@ -16,6 +16,7 @@ import (
 // RFC 8446 4.2.3 signature schemes accepted in CertificateVerify.
 const (
 	SchemeECDSAP256SHA256 = 0x0403 // ecdsa_secp256r1_sha256
+	SchemeECDSAP384SHA384 = 0x0503 // ecdsa_secp384r1_sha384
 	SchemeRSAPSSSHA256    = 0x0804 // rsa_pss_rsae_sha256
 	SchemeRSAPSSSHA384    = 0x0805 // rsa_pss_rsae_sha384
 	SchemeRSAPSSSHA512    = 0x0806 // rsa_pss_rsae_sha512
@@ -60,7 +61,7 @@ var (
 //   - A server must be valid for the expected name, a DNS name or IP literal.
 //   - The CertificateVerify signature must be the leaf key's under the scheme.
 //
-// Certificates may carry RSA keys of 1024 to 4096 bits and ECDSA P-256 keys and
+// Certificates may carry RSA keys of 1024 to 4096 bits and ECDSA P-256 and P-384 keys and
 // be signed with PKCS #1 v1.5, PSS or ECDSA over SHA-256, SHA-384 or SHA-512.
 // Chains through CAs with name constraints, a policy constraint requiring
 // explicit policy or a mapping of anyPolicy, and chains that need other curves,
@@ -69,7 +70,7 @@ var (
 // The zero Verifier trusts nothing. Set Roots, and Time where time.Now does not
 // return the wall clock, before first use and do not modify them after. A
 // Verifier is safe for concurrent use: calls are serialized over its working
-// memory. A Verifier is about 12 KiB on 32-bit platforms and 13 KiB on 64-bit
+// memory. A Verifier is about 15 KiB on 32-bit platforms and 16 KiB on 64-bit
 // ones; declare it as a package variable on devices with small stacks.
 type Verifier struct {
 	// Roots are the trust anchors as DER certificates.
@@ -91,6 +92,7 @@ type verifyScratch struct {
 	d256   sha256.Digest
 	d512   sha512.Digest
 	ec     ecdsa.P256Verifier
+	ec384  ecdsa.P384Verifier
 	rsa    rsa.Verifier
 }
 
@@ -167,6 +169,11 @@ func (v *Verifier) verifyCertificateVerify(leaf *Certificate, scheme uint16, msg
 			return ErrScheme
 		}
 		return sc.ec.VerifyASN1(leaf.PublicKey, sc.hash(rsa.SHA256, msg), sig)
+	case SchemeECDSAP384SHA384:
+		if leaf.PublicKeyAlgorithm != ECDSAP384 {
+			return ErrScheme
+		}
+		return sc.ec384.VerifyASN1(leaf.PublicKey, sc.hash(rsa.SHA384, msg), sig)
 	case SchemeRSAPSSSHA256, SchemeRSAPSSSHA384, SchemeRSAPSSSHA512:
 		if leaf.PublicKeyAlgorithm != RSA {
 			return ErrScheme
@@ -367,14 +374,16 @@ func (v *Verifier) checkSignatureFrom(c, parent *Certificate) error {
 	}
 	switch c.SignatureAlgorithm {
 	case ECDSAWithSHA256, ECDSAWithSHA384, ECDSAWithSHA512:
+		digest := sc.hash(h, c.RawTBSCertificate)
 		switch parent.PublicKeyAlgorithm {
-		case ECDSAP224, ECDSAP384, ECDSAP521:
-			return ErrUnsupported
 		case ECDSAP256:
-		default:
-			return errKeyMismatch
+			return sc.ec.VerifyASN1(parent.PublicKey, digest, c.Signature)
+		case ECDSAP384:
+			return sc.ec384.VerifyASN1(parent.PublicKey, digest, c.Signature)
+		case ECDSAP224, ECDSAP521:
+			return ErrUnsupported
 		}
-		return sc.ec.VerifyASN1(parent.PublicKey, sc.hash(h, c.RawTBSCertificate), c.Signature)
+		return errKeyMismatch
 	case SHA256WithRSAPSS, SHA384WithRSAPSS, SHA512WithRSAPSS:
 		pss = true
 	}

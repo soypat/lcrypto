@@ -7,3 +7,9 @@ package fiat
 func (e *P256Element) BytesTo(out *[p256ElementLen]byte) []byte {
 	return e.bytes(out)
 }
+
+// BytesTo is the allocation-free [P384Element.Bytes]: it writes into out, which the
+// result aliases, instead of a new array.
+func (e *P384Element) BytesTo(out *[p384ElementLen]byte) []byte {
+	return e.bytes(out)
+}

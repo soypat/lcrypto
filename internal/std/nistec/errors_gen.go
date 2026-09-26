@@ -11,4 +11,8 @@ var (
 	errP256PointNotOnCurve                = errors.New("P256 point not on curve")
 	errP256PointIsThePoint                = errors.New("P256 point is the point at infinity")
 	errInvalidScalarLength                = errors.New("invalid scalar length")
+	errInvalidP384CompressedPointEncoding = errors.New("invalid P384 compressed point encoding")
+	errInvalidP384PointEncoding           = errors.New("invalid P384 point encoding")
+	errP384PointNotOnCurve                = errors.New("P384 point not on curve")
+	errP384PointIsThePoint                = errors.New("P384 point is the point at infinity")
 )

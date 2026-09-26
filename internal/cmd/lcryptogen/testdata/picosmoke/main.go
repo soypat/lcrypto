@@ -27,6 +27,9 @@ var (
 	rsaVerifier      rsa.Verifier
 	modulus          [256]byte
 	certVerifier     x509.Verifier
+	cred             x509.Credential
+	signer           ecdsa.P384Signer
+	sigBuf           [ecdsa.P384SignatureMaxSize]byte
 	certs            x509.Chain
 
 	cs     [p256.ShareSize]byte
@@ -80,6 +83,14 @@ func main() {
 	certs = x509.Chain{modulus[:], modulus[:]}
 	certVerifier.Roots = &certs // A pointer: boxing the slice would allocate.
 	println(certVerifier.VerifyPeer(&certs, x509.SchemeECDSAP256SHA256, true, modulus[:8], modulus[:], modulus[:]) == nil)
+	// Signing: the key fails to parse, but Sign is reachable; the P-384 signer signs hedged.
+	cred.Rand = &rand
+	println(cred.SetKey(&certs, modulus[:]) == nil)
+	cred.Sign(sigBuf[:], modulus[:], x509.SchemeECDSAP256SHA256)
+	signer.SetKey(modulus[:48])
+	n, err := signer.SignASN1(sigBuf[:], shared[0][:], &rand)
+	println(n, err == nil)
+	signer.Zeroize()
 }
 
 func exchange(client, server lcrypto.Exchanger) bool {

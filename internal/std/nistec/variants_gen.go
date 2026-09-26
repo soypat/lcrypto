@@ -35,3 +35,28 @@ func (p *p256AffinePoint) ProjectiveInto(pp *P256Point) *P256Point {
 	pp.z.One()
 	return pp
 }
+
+// NewP384PointInto is the allocation-free [NewP384Point]: it initializes v instead of a new P384Point.
+func NewP384PointInto(v *P384Point) *P384Point {
+	*v = P384Point{}
+	v.y.One()
+	return v
+}
+
+// BytesTo is the allocation-free [P384Point.Bytes]: it writes into out, which the
+// result aliases, instead of a new array.
+func (p *P384Point) BytesTo(out *[1 + 2*p384ElementLength]byte) []byte {
+	return p.bytes(out)
+}
+
+// BytesXTo is the allocation-free [P384Point.BytesX]: it writes into out, which the
+// result aliases, instead of a new array.
+func (p *P384Point) BytesXTo(out *[p384ElementLength]byte) ([]byte, error) {
+	return p.bytesX(out)
+}
+
+// BytesCompressedTo is the allocation-free [P384Point.BytesCompressed]: it writes into out, which the
+// result aliases, instead of a new array.
+func (p *P384Point) BytesCompressedTo(out *[1 + p384ElementLength]byte) []byte {
+	return p.bytesCompressed(out)
+}

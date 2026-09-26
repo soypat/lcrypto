@@ -10,6 +10,7 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"math/big"
 	"sync"
@@ -250,6 +251,126 @@ func Verifier(t *testing.T, v lcrypto.Verifier, c VerifierCase) {
 				}
 				if err := verify(bc); (err == nil) != (bc.Sig[i%len(bc.Sig)] == c.Sig[i%len(c.Sig)]) {
 					t.Errorf("concurrent verification: got %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// VerifyCertificateVerify checks sig over msg under scheme by the leaf key of
+// chain with the Go standard library, as crypto/tls does.
+func VerifyCertificateVerify(chain lcrypto.CertChain, scheme uint16, msg, sig []byte) error {
+	der, err := chain.CertView(0)
+	if err != nil {
+		return err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return err
+	}
+	var h crypto.Hash
+	var digest []byte
+	switch scheme {
+	case 0x0403, 0x0804:
+		h = crypto.SHA256
+		d := sha256.Sum256(msg)
+		digest = d[:]
+	case 0x0503, 0x0805:
+		h = crypto.SHA384
+		d := sha512.Sum384(msg)
+		digest = d[:]
+	case 0x0603, 0x0806:
+		h = crypto.SHA512
+		d := sha512.Sum512(msg)
+		digest = d[:]
+	default:
+		return errors.New("lcryptotest: unsupported scheme")
+	}
+	switch pub := leaf.PublicKey.(type) {
+	case *ecdsa.PublicKey:
+		if scheme>>8 == 8 || pub.Curve.Params().BitSize != map[crypto.Hash]int{crypto.SHA256: 256, crypto.SHA384: 384, crypto.SHA512: 521}[h] {
+			return errors.New("lcryptotest: scheme does not suit key")
+		}
+		if !ecdsa.VerifyASN1(pub, digest, sig) {
+			return errors.New("lcryptotest: ECDSA verification failure")
+		}
+		return nil
+	case *rsa.PublicKey:
+		return rsa.VerifyPSS(pub, h, digest, sig, &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
+	}
+	return errors.New("lcryptotest: unsupported key")
+}
+
+// Credential checks the lcrypto.Credential contract: c picks its scheme from
+// those offered, rejects others, reports short buffers, and signs without
+// allocating and consistently under concurrent use. Signatures must verify with
+// the Go standard library and, if v is not nil, with v, which must trust c's
+// chain as a server named "example.com". maxSig is the largest signature size.
+func Credential(t *testing.T, c lcrypto.Credential, v lcrypto.Verifier, scheme uint16, maxSig int) {
+	t.Helper()
+	for _, tc := range []struct {
+		offered []uint16
+		want    uint16
+	}{
+		{nil, 0},
+		{[]uint16{0xfefe}, 0},
+		{[]uint16{scheme}, scheme},
+		{[]uint16{0x0807, 0xfefe, scheme, 0x0804}, scheme},
+	} {
+		if got := c.Scheme(tc.offered); got != tc.want {
+			t.Errorf("Scheme(%04x) = %04x, want %04x", tc.offered, got, tc.want)
+		}
+	}
+	msg := CertificateVerifyMsg(true, make([]byte, 32))
+	sig := make([]byte, maxSig)
+	if _, err := c.Sign(sig, msg, scheme^0x0100); err == nil {
+		t.Error("signed with a scheme not selected")
+	}
+	if n, err := c.Sign(sig[:4], msg, scheme); !errors.Is(err, io.ErrShortBuffer) || n <= 4 || n > maxSig {
+		t.Errorf("short buffer: %d, %v", n, err)
+	}
+	check := func(sig []byte, msg []byte) error {
+		if err := VerifyCertificateVerify(c, scheme, msg, sig); err != nil {
+			return err
+		}
+		if v != nil {
+			return v.VerifyPeer(c, scheme, true, []byte("example.com"), msg, sig)
+		}
+		return nil
+	}
+	n, err := c.Sign(sig, msg, scheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check(sig[:n], msg); err != nil {
+		t.Fatal("signature does not verify:", err)
+	}
+	sig[n/2] ^= 1
+	if check(sig[:n], msg) == nil {
+		t.Error("tampered signature verifies")
+	}
+	if allocs := testing.AllocsPerRun(3, func() {
+		if _, err := c.Sign(sig, msg, scheme); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Errorf("Sign allocated %v times per run", allocs)
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sig := make([]byte, maxSig)
+			msg := CertificateVerifyMsg(true, []byte{byte(g)})
+			for i := 0; i < 3; i++ {
+				n, err := c.Sign(sig, msg, scheme)
+				if err == nil {
+					err = check(sig[:n], msg)
+				}
+				if err != nil {
+					t.Errorf("concurrent signature: %v", err)
 				}
 			}
 		}()
