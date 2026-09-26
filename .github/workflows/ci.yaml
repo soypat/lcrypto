@@ -32,15 +32,15 @@ jobs:
 
       - name: go vet (tinygo tags)
         run: go vet -tags=tinygo ./...
-
-      - name: go fix
-        run: |
-          diff=$(go fix -diff ./... 2>&1) || true
-          if [ -n "$diff" ]; then
-            echo "$diff"
-            echo "::error::Files need go tool fix. Run: go tool fix ./..."
-            exit 1
-          fi
+      # TODO: add go fix in future when stdlib does go fixing, or use it in generate step.
+      # - name: go fix
+      #   run: |
+      #     diff=$(go fix -diff ./... 2>&1) || true
+      #     if [ -n "$diff" ]; then
+      #       echo "$diff"
+      #       echo "::error::Files need go tool fix. Run: go tool fix ./..."
+      #       exit 1
+      #     fi
 
   build:
     runs-on: ubuntu-latest
