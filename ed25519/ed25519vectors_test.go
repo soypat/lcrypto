@@ -3,8 +3,6 @@ package ed25519
 import (
 	"encoding/hex"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
@@ -14,11 +12,7 @@ import (
 // filippo.io/mostly-harmless/ed25519vectors, where implementations disagree,
 // must be decided as the standard library decides them.
 func TestEd25519Vectors(t *testing.T) {
-	dir := cryptotest.FetchModule(t, "filippo.io/mostly-harmless/ed25519vectors", "v0.0.0-20210322192420-30a2d7243a94")
-	jsonVectors, err := os.ReadFile(filepath.Join(dir, "ed25519vectors.json"))
-	if err != nil {
-		t.Fatalf("failed to read ed25519vectors.json: %v", err)
-	}
+	jsonVectors := cryptotest.Vectors(t, "ed25519vectors", "ed25519vectors.json")
 	var vectors []struct {
 		A, R, S, M string
 		Flags      []string

@@ -40,25 +40,24 @@ func LoadVectorFile(t *testing.T, filename string, value any) {
 	testenv.SkipIfShortAndSlow(t)
 
 	// We want to avoid a dependency on c2sp/wycheproof or the schema generator
-	// in this stdlib code, so we fetch the module at runtime and read the
-	// vector JSON from that module clone. The version is pinned to whatever
+	// in this stdlib code, so lcryptogen vendors the
+	// vector files tests use into internal/lcryptotest/testdata. The version is pinned to whatever
 	// the _schema generator was last run against (see schemaversion.go), so
 	// the vectors match the generated schema.go.
 	//
 	// If -wycheproof-dir is set, read from that local checkout instead, to
 	// support testing local updates to Wycheproof.
-	dir := *wycheproofDir
-	if dir == "" {
-		dir = cryptotest.FetchModule(
-			t, "github.com/c2sp/wycheproof", wycheproofVersion)
+	var content []byte
+	if dir := *wycheproofDir; dir != "" {
+		var err error
+		if content, err = os.ReadFile(path.Join(dir, "testvectors_v1", filename)); err != nil {
+			t.Fatalf("missing Wycheproof vector file %q: %v", filename, err)
+		}
+	} else {
+		content = cryptotest.Vectors(t, "wycheproof", filename)
 	}
 
-	content, err := os.ReadFile(path.Join(dir, "testvectors_v1", filename))
-	if err != nil {
-		t.Fatalf("missing Wycheproof vector file %q: %v", filename, err)
-	}
-
-	err = json.Unmarshal(content, value)
+	err := json.Unmarshal(content, value)
 	if err != nil {
 		t.Fatalf("failed to unmarshal vector file %q: %v", filename, err)
 	}

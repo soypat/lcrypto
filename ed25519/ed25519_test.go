@@ -2,14 +2,14 @@ package ed25519
 
 import (
 	"bufio"
-	"compress/gzip"
+	"bytes"
 	stded25519 "crypto/ed25519"
 	"encoding/hex"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/soypat/lcrypto/internal/lcryptotest"
+	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
 )
 
 func unhex(s string) []byte {
@@ -56,18 +56,9 @@ func checkVector(t *testing.T, seed, pub, msg, sig []byte) {
 	}
 }
 
-// TestSignInput runs crypto/ed25519's sign.input.gz, from the fetched Go tree.
+// TestSignInput runs crypto/ed25519's sign.input.gz.
 func TestSignInput(t *testing.T) {
-	f, err := os.Open("../local/_go/crypto/ed25519/testdata/sign.input.gz")
-	if err != nil {
-		t.Skip("Go testdata missing; run `go run ./internal/cmd/lcryptogen fetch`")
-	}
-	defer f.Close()
-	z, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sc := bufio.NewScanner(z)
+	sc := bufio.NewScanner(bytes.NewReader(cryptotest.Vectors(t, "ed25519", "sign.input.gz")))
 	n := 0
 	for sc.Scan() {
 		parts := strings.Split(sc.Text(), ":")

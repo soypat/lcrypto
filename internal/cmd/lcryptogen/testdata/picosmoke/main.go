@@ -84,11 +84,12 @@ func main() {
 		rsaVerifier.VerifyPSS(modulus[:], 65537, rsa.SHA256, shared[0][:], modulus[:]) == nil)
 	// Garbage certificates: the chain is parsed and rejected.
 	certs = x509.Chain{modulus[:], modulus[:]}
-	certVerifier.Roots = &certs // A pointer: boxing the slice would allocate.
+	// Roots are a pointer: boxing the slice would allocate. Configure rejects
+	// the garbage roots; VerifyPeer then fails unconfigured.
+	println(certVerifier.Configure(x509.VerifierConfig{Roots: &certs, Nanotime: nanotime, MaxPeerCerts: 4}) == nil)
 	println(certVerifier.VerifyPeer(&certs, x509.SchemeECDSAP256SHA256, true, modulus[:8], modulus[:], modulus[:]) == nil)
 	// Signing: the key fails to parse, but Sign is reachable; the P-384 signer signs hedged.
-	cred.Rand = &rand
-	println(cred.SetKey(&certs, modulus[:]) == nil)
+	println(cred.Configure(x509.CredentialConfig{Chain: &certs, Key: modulus[:], Rand: &rand}) == nil)
 	cred.Sign(sigBuf[:], modulus[:], x509.SchemeECDSAP256SHA256)
 	signer.SetKey(modulus[:48])
 	n, err := signer.SignASN1(sigBuf[:], shared[0][:], &rand)
@@ -100,6 +101,9 @@ func main() {
 	println(edVerifier.Verify(pub, modulus[:], sigBuf[:ed25519.SignatureSize]) == nil)
 	edSigner.Zeroize()
 }
+
+// nanotime is a fixed wall clock: 2023-11-14.
+func nanotime() int64 { return 1_700_000_000e9 }
 
 func exchange(client, server lcrypto.Exchanger) bool {
 	n, err := client.ClientGenerateRekey(cs[:], &rand)

@@ -274,7 +274,9 @@ func (ps *pkgState) rewrite(job *fileJob) error {
 			rw.stringWrites(fd)
 		}
 		if job.isTest {
-			rw.quickSkips(fd)
+			if err := rw.quickChecks(fd); err != nil {
+				return err
+			}
 		}
 	}
 	job.src, err = applyEdits(job.src, rw.edits)
@@ -344,6 +346,9 @@ func (rw *rewriter) stripBuildLines() {
 
 func (rw *rewriter) dropDecls() {
 	keep := rw.ps.spec.KeepDecls
+	if rw.job.isTest {
+		keep = nil // Tests are ported whole: they only use what they test.
+	}
 	drop := func(name string) (strict, ok bool) {
 		if len(keep) > 0 {
 			if slices.Contains(keep, name) {
@@ -866,29 +871,146 @@ func (rw *rewriter) pointerTables(fd *ast.FuncDecl) {
 	}
 }
 
-// quickSkips makes a test function calling testing/quick's Check or CheckEqual
-// skip under TinyGo, whose reflect cannot describe the checked function.
-func (rw *rewriter) quickSkips(fd *ast.FuncDecl) {
-	params := fd.Type.Params.List
-	if !strings.HasPrefix(fd.Name.Name, "Test") || len(params) != 1 || len(params[0].Names) != 1 || len(fd.Body.List) == 0 {
-		return
+// castToTest turns job, an upstream cast.go, into cast_test.go: the FIPS 140-3
+// start-up self-tests, each a fips140.CAST(name, f) call, become subtests of
+// TestCAST, so their known answers check the port. Declarations holding CAST
+// calls are replaced; the helpers they use stay.
+func castToTest(job *fileJob) error {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, job.name, job.src, parser.ParseComments)
+	if err != nil {
+		return err
 	}
-	calls := false
+	off := func(p token.Pos) int { return fset.Position(p).Offset }
+	text := func(n ast.Node) string { return string(job.src[off(n.Pos()):off(n.End())]) }
+	var cases strings.Builder
+	var edits []edit
+	for _, d := range f.Decls {
+		n := 0
+		ast.Inspect(d, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) != 2 {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CAST" {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "fips140" {
+					fmt.Fprintf(&cases, "\t\t{%s, %s},\n", text(call.Args[0]), text(call.Args[1]))
+					n++
+					return false
+				}
+			}
+			return true
+		})
+		if n > 0 {
+			start := d.Pos()
+			if gd, ok := d.(*ast.GenDecl); ok && gd.Doc != nil {
+				start = gd.Doc.Pos()
+			} else if fd, ok := d.(*ast.FuncDecl); ok && fd.Doc != nil {
+				start = fd.Doc.Pos()
+			}
+			edits = append(edits, edit{start: off(start), end: off(d.End())})
+		}
+	}
+	if cases.Len() == 0 {
+		return fmt.Errorf("%s: no fips140.CAST calls", job.name)
+	}
+	var imp *ast.GenDecl
+	for _, d := range f.Decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.IMPORT && gd.Lparen.IsValid() {
+			imp = gd
+			break
+		}
+	}
+	if imp == nil {
+		return fmt.Errorf("%s: no import block", job.name)
+	}
+	edits = append(edits, edit{start: off(imp.Rparen), end: off(imp.Rparen), text: "\t\"testing\"\n"})
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+	src, err := applyEdits(job.src, edits)
+	if err != nil {
+		return err
+	}
+	job.src = append(src, "\n// TestCAST runs the known-answer self-tests the FIPS 140-3 module runs at start-up.\n"+
+		"func TestCAST(t *testing.T) {\n\tfor _, c := range []struct {\n\t\tname string\n\t\tf    func() error\n\t}{\n"+
+		cases.String()+"\t} {\n\t\tt.Run(c.name, func(t *testing.T) {\n\t\t\tif err := c.f(); err != nil {\n\t\t\t\tt.Fatal(err)\n\t\t\t}\n\t\t})\n\t}\n}\n"...)
+	job.name, job.isTest = "cast_test.go", true
+	return nil
+}
+
+// quickChecks rewrites testing/quick's Check(f, config) to CheckN of
+// internal/lcryptotest/quick, where N is the arity of f: TinyGo's reflect cannot
+// inspect or call function types, so the arity must be known when compiling.
+// f is a function literal, a variable assigned one in fd, a top-level function
+// of the file, or a call of a top-level function returning a function.
+func (rw *rewriter) quickChecks(fd *ast.FuncDecl) error {
+	var err error
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
-		if sel, ok := n.(*ast.SelectorExpr); ok {
-			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "quick" && (sel.Sel.Name == "Check" || sel.Sel.Name == "CheckEqual") {
-				calls = true
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 || err != nil {
+			return err == nil
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Check" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); !ok || x.Name != "quick" {
+			return true
+		}
+		ft := rw.funcTypeOf(call.Args[0], fd)
+		if ft == nil {
+			err = fmt.Errorf("%s: cannot tell the arity of the function quick.Check checks", rw.fset.Position(call.Pos()))
+			return false
+		}
+		arity := 0
+		for _, f := range ft.Params.List {
+			arity += max(1, len(f.Names))
+		}
+		rw.edits = append(rw.edits, edit{start: rw.off(sel.Sel.Pos()), end: rw.off(sel.Sel.End()), text: fmt.Sprintf("Check%d", arity)})
+		return true
+	})
+	return err
+}
+
+// funcTypeOf finds the type of function-valued expression e syntactically, see quickChecks.
+func (rw *rewriter) funcTypeOf(e ast.Expr, fd *ast.FuncDecl) *ast.FuncType {
+	topLevel := func(name string) *ast.FuncDecl {
+		for _, d := range rw.file.Decls {
+			if f, ok := d.(*ast.FuncDecl); ok && f.Recv == nil && f.Name.Name == name {
+				return f
 			}
 		}
-		return !calls
-	})
-	if calls {
-		t := params[0].Names[0].Name
-		rw.edits = append(rw.edits, edit{
-			start: rw.off(fd.Body.List[0].Pos()), end: rw.off(fd.Body.List[0].Pos()),
-			text: "testenv.SkipIfTinyGo(" + t + ", \"testing/quick needs reflect.Type.NumOut\")\n\t",
-		})
+		return nil
 	}
+	switch e := e.(type) {
+	case *ast.FuncLit:
+		return e.Type
+	case *ast.Ident:
+		var ft *ast.FuncType
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && len(as.Rhs) == 1 {
+				if id, ok := as.Lhs[0].(*ast.Ident); ok && id.Name == e.Name {
+					if lit, ok := as.Rhs[0].(*ast.FuncLit); ok {
+						ft = lit.Type
+					}
+				}
+			}
+			return ft == nil
+		})
+		if ft == nil {
+			if f := topLevel(e.Name); f != nil {
+				ft = f.Type
+			}
+		}
+		return ft
+	case *ast.CallExpr:
+		if id, ok := e.Fun.(*ast.Ident); ok {
+			if f := topLevel(id.Name); f != nil && f.Type.Results != nil && len(f.Type.Results.List) == 1 {
+				ft, _ := f.Type.Results.List[0].Type.(*ast.FuncType)
+				return ft
+			}
+		}
+	}
+	return nil
 }
 
 // stringWrites rewrites w.Write([]byte(s)) into a write of s's bytes in place,
@@ -1082,7 +1204,15 @@ func (ps *pkgState) fixImports(job *fileJob) error {
 			continue
 		}
 		for _, is := range kill {
-			edits = append(edits, edit{start: off(is.Pos()), end: off(is.End())})
+			// The whole line, so no blank line splits the block into groups.
+			start, end := off(is.Pos()), off(is.End())
+			for start > 0 && (job.src[start-1] == ' ' || job.src[start-1] == '\t') {
+				start--
+			}
+			if end < len(job.src) && job.src[end] == '\n' && start > 0 && job.src[start-1] == '\n' {
+				end++
+			}
+			edits = append(edits, edit{start: start, end: end})
 		}
 	}
 	var add []string

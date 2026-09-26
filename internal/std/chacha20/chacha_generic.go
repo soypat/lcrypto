@@ -11,7 +11,6 @@ package chacha20
 
 import (
 	"encoding/binary"
-
 	"math/bits"
 
 	"github.com/soypat/lcrypto/internal/std/alias"

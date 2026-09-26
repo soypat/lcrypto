@@ -12,7 +12,6 @@ package rsa
 
 import (
 	"bytes"
-
 	"hash"
 )
 

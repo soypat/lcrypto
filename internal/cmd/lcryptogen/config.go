@@ -9,6 +9,7 @@ const (
 	modulePath     = "github.com/soypat/lcrypto"
 	stdDir         = "internal/std"         // Output root, relative to module root.
 	kitDir         = "internal/lcryptotest" // Output root of Kit packages.
+	vectorsDir     = "local/_vectors"       // Fetched test vector suites.
 )
 
 // pkgSpec describes one ported package.
@@ -119,6 +120,7 @@ var kitImportMap = map[string]string{
 	"internal/msan":                         kitDir + "/testenv",
 	"internal/asan":                         kitDir + "/testenv",
 	"internal/testhash":                     kitDir + "/testhash",
+	"testing/quick":                         kitDir + "/quick", // Hand-written: runs under TinyGo.
 	"crypto/internal/cryptotest":            kitDir + "/cryptotest",
 	"crypto/internal/cryptotest/wycheproof": kitDir + "/wycheproof",
 	"crypto/internal/cryptotest/x509limbo":  kitDir + "/x509limbo",
@@ -184,10 +186,73 @@ var falseConds = map[string]bool{
 var hashMarshal = []string{"Digest.MarshalBinary", "Digest.AppendBinary", "Digest.UnmarshalBinary", "Digest.Clone", "consumeUint64"}
 
 // packages is processed in order; order also fixes output determinism.
-// testInputs are directories fetch also copies for hand-written tests, in the
-// Src form of pkgSpec. They are not generator inputs.
-var testInputs = []string{
-	"go:crypto/x509/testdata", // NIST PKITS and policy certificates for x509's differential tests.
+
+// vectorSuite is a test vector suite that lcryptogen vendors, gzipped, into
+// kitDir/testdata so that tests run offline and under TinyGo: from module
+// Module at Version, or from testdata of the pinned Go tree at Src.
+// cryptotest.Vectors reads back file F of kitDir/testdata/Dir/F.gz; with
+// Archive, cryptotest.VectorFS reads kitDir/testdata/Dir.tar.gz.
+type vectorSuite struct {
+	Module, Version string
+	// Pin, when set, is an upstream source that must quote Version: the
+	// version the ported schema of the suite was generated against.
+	Pin     string
+	Src     string // "go:<path under GOROOT/src>", instead of Module.
+	Dir     string
+	Files   []string // Paths within the module or Src; globs for Src.
+	Archive bool     // One tar of Files, for suites of many files.
+}
+
+// vectorSuites are fetched into local/_vectors/Dir. Tests read only the files
+// listed: add a file here to use it.
+var vectorSuites = []vectorSuite{
+	{
+		Module: "github.com/c2sp/wycheproof", Version: "v0.0.0-20260625212325-ee7b4f7e6119",
+		Pin: "go:crypto/internal/cryptotest/wycheproof/schemaversion.go", Dir: "wycheproof",
+		Files: prefixed("testvectors_v1/",
+			"aes_gcm_test.json", "chacha20_poly1305_test.json",
+			"x25519_test.json", "ecdh_secp256r1_ecpoint_test.json",
+			"ecdsa_secp256r1_sha256_test.json", "ecdsa_secp256r1_sha512_test.json",
+			"ecdsa_secp256r1_sha3_256_test.json", "ecdsa_secp256r1_sha3_512_test.json",
+			"ecdsa_secp384r1_sha256_test.json", "ecdsa_secp384r1_sha384_test.json", "ecdsa_secp384r1_sha512_test.json",
+			"ecdsa_secp384r1_sha3_384_test.json", "ecdsa_secp384r1_sha3_512_test.json",
+			"ed25519_test.json",
+			"rsa_signature_2048_sha256_test.json", "rsa_signature_2048_sha384_test.json", "rsa_signature_2048_sha512_test.json",
+			"rsa_signature_3072_sha256_test.json", "rsa_signature_3072_sha384_test.json", "rsa_signature_3072_sha512_test.json",
+			"rsa_signature_4096_sha256_test.json", "rsa_signature_4096_sha384_test.json", "rsa_signature_4096_sha512_test.json",
+			"rsa_pss_2048_sha256_mgf1_32_test.json", "rsa_pss_2048_sha384_mgf1_48_test.json",
+			"rsa_pss_3072_sha256_mgf1_32_test.json", "rsa_pss_4096_sha256_mgf1_32_test.json",
+			"rsa_pss_4096_sha384_mgf1_48_test.json", "rsa_pss_4096_sha512_mgf1_64_test.json", "rsa_pss_misc_test.json",
+			"mlkem_768_keygen_seed_test.json", "mlkem_768_encaps_test.json", "mlkem_768_test.json",
+		),
+	},
+	{
+		Module: "github.com/C2SP/x509-limbo", Version: "v0.0.0-20260522003327-feb7caccc1af",
+		Pin: "go:crypto/internal/cryptotest/x509limbo/schemaversion.go", Dir: "x509limbo",
+		Files: []string{"limbo.json"},
+	},
+	{
+		// NIST PKITS and policy certificates, for x509's differential tests.
+		Src: "go:crypto/x509/testdata", Dir: "x509", Archive: true,
+		Files: []string{"*.pem", "nist-pkits/vectors.json", "nist-pkits/certs/*.crt"},
+	},
+	{
+		// crypto/ed25519's TestSignAgainstVectors input.
+		Src: "go:crypto/ed25519/testdata", Dir: "ed25519", Files: []string{"sign.input.gz"},
+	},
+	{
+		// As pinned by crypto/ed25519's TestEd25519Vectors.
+		Module: "filippo.io/mostly-harmless/ed25519vectors", Version: "v0.0.0-20210322192420-30a2d7243a94",
+		Pin: "go:crypto/ed25519/ed25519vectors_test.go", Dir: "ed25519vectors",
+		Files: []string{"ed25519vectors.json"},
+	},
+}
+
+func prefixed(prefix string, names ...string) []string {
+	for i, n := range names {
+		names[i] = prefix + n
+	}
+	return names
 }
 
 var packages = []pkgSpec{
@@ -205,12 +270,23 @@ var packages = []pkgSpec{
 	{Src: "go:crypto/internal/fips140/subtle", Dst: "subtle"},
 	{
 		Src: "go:crypto/internal/fips140/aes", Dst: "aes",
-		DropFiles: []string{"cast.go", "cbc*.go", "ctr*.go", "interface_test.go"},
+		DropFiles: []string{"cbc*.go", "ctr*.go", "interface_test.go"},
+		Patches: []patch{
+			// CBC is not ported: one block of it is the block cipher of plaintext XOR IV.
+			{
+				File: "cast.go", Old: "NewCBCEncrypter(b, iv).CryptBlocks(buf, plaintext)",
+				New: "for i := range buf {\n\t\t\tbuf[i] = plaintext[i] ^ iv[i]\n\t\t}\n\t\tb.Encrypt(buf, buf)",
+			},
+			{
+				File: "cast.go", Old: "NewCBCDecrypter(b, iv).CryptBlocks(buf, ciphertext)",
+				New: "b.Decrypt(buf, ciphertext)\n\t\tfor i := range buf {\n\t\t\tbuf[i] ^= iv[i]\n\t\t}",
+			},
+		},
 	},
 	{
 		Src: "go:crypto/internal/fips140/aes/gcm", Dst: "gcm",
-		DropFiles: []string{"cast.go", "cmac.go", "ctrkdf.go", "gcm_nonces.go"},
-		DropDecls: []string{"GHASH"}, // Returns an escaping slice.
+		DropFiles: []string{"cast.go", "cmac.go", "ctrkdf.go", "gcm_nonces.go"}, // The CAST is of the counter KDF.
+		DropDecls: []string{"GHASH"},                                            // Returns an escaping slice.
 		Patches: []patch{
 			// Range-over-func iterator: its closure and captured state are heap allocated by TinyGo.
 			{
@@ -249,7 +325,6 @@ var packages = []pkgSpec{
 	},
 	{
 		Src: "go:crypto/internal/fips140/sha256", Dst: "sha256",
-		DropFiles: []string{"cast.go"},
 		DropDecls: append([]string{"consumeUint32"}, hashMarshal...),
 		Hoists:    []hoist{{Func: "Digest.checkSum", Via: "d", Type: "Digest", Vars: []string{"tmp:pad"}}},
 		Patches: []patch{{
@@ -262,7 +337,6 @@ var packages = []pkgSpec{
 	},
 	{
 		Src: "go:crypto/internal/fips140/sha512", Dst: "sha512",
-		DropFiles: []string{"cast.go"},
 		DropDecls: hashMarshal,
 		Patches: []patch{{
 			// See sha256: the Digest copy is heap allocated, and over TinyGo's stack limit.
@@ -277,7 +351,6 @@ var packages = []pkgSpec{
 	},
 	{
 		Src: "go:crypto/internal/fips140/sha3", Dst: "sha3",
-		DropFiles: []string{"cast.go"},
 		DropDecls: []string{
 			"Digest.Clone", "Digest.MarshalBinary", "Digest.AppendBinary", "Digest.UnmarshalBinary",
 			"SHAKE.Clone", "SHAKE.MarshalBinary", "SHAKE.AppendBinary", "SHAKE.UnmarshalBinary",
@@ -315,7 +388,7 @@ func keccakF1600Words(a *[25]uint64) {`,
 	},
 	{
 		Src: "go:crypto/internal/fips140/mlkem", Dst: "mlkem",
-		DropFiles: []string{"cast.go", "mlkem1024.go"},
+		DropFiles: []string{"mlkem1024.go"},
 		DropDecls: []string{
 			// DRBG-backed and test-only entry points; lcrypto draws randomness from the caller.
 			"GenerateKey768", "generateKey", "TestingOnlyNewDecapsulationKey768", "TestingOnlyExpandedBytes768",
@@ -398,13 +471,14 @@ func keccakF1600Words(a *[25]uint64) {`,
 		// Pure Ed25519 (RFC 8032). Keys carry the window tables of the base point
 		// multiplications, which edwards25519 takes from its callers.
 		Src: "go:crypto/internal/fips140/ed25519", Dst: "ed25519",
-		DropFiles: []string{"cast.go"}, // FIPS self tests.
+		DropDecls: []string{"fipsPCT", "pairwiseTest"}, // Pairwise consistency test of key generation, which is not ported.
 		KeepDecls: []string{
 			"seedSize", "publicKeySize", "privateKeySize", "signatureSize", "sha512Size",
 			"PrivateKey", "PublicKey", "newPrivateKeyFromSeed", "precomputePrivateKey", "newPublicKey",
 			"domPrefixPure", "sign", "signWithDom", "verify", "verifyWithDom",
 		},
 		Patches: []patch{
+			{File: "cast.go", Old: "NewPublicKey(k.PublicKey())", New: "newPublicKey(new(PublicKey), k.PublicKeyBytes()[:])", Count: 2},
 			{File: "ed25519.go", Old: "\tprefix [sha512Size / 2]byte\n", New: "\tprefix [sha512Size / 2]byte\n\tsc     edwards25519.Scratch\n"},
 			{File: "ed25519.go", Old: "\taBytes [32]byte\n", New: "\taBytes [32]byte\n\tsc     edwards25519.Scratch\n"},
 			{File: "ed25519.go", Old: "(&edwards25519.Point{}).ScalarBaseMult(s)", New: "(&edwards25519.Point{}).ScalarBaseMultScratch(s, &priv.sc)"},
@@ -421,7 +495,7 @@ func keccakF1600Words(a *[25]uint64) {`,
 	},
 	{
 		Src: "go:crypto/internal/fips140/nistec/fiat", Dst: "fiat",
-		DropFiles: []string{"cast.go", "p224*.go", "p521*.go", "benchmark_test.go"},
+		DropFiles: []string{"cast.go", "p224*.go", "p521*.go", "benchmark_test.go"}, // cast.go only imports the integrity check.
 	},
 	{
 		Src: "go:crypto/internal/fips140/nistec", Dst: "nistec",
@@ -507,7 +581,7 @@ func keccakF1600Words(a *[25]uint64) {`,
 	{
 		// RSA signature verification helpers; lcrypto composes them in rsa_lcrypto.go.
 		Src: "go:crypto/internal/fips140/rsa", Dst: "rsa",
-		DropFiles: []string{"cast.go", "keygen.go", "largeexponent.go"},
+		DropFiles: []string{"cast.go", "keygen.go", "largeexponent.go"}, // The CAST signs, which is not ported.
 		KeepDecls: []string{
 			"PublicKey", "PublicKey.Size", "checkPublicKey", "ErrVerification", "ErrMessageTooLong",
 			"hashPrefixes", "hashSize", "pkcs1v15ConstructEM",
@@ -551,9 +625,22 @@ func keccakF1600Words(a *[25]uint64) {`,
 	{
 		// Private key range checks of the NIST curves.
 		Src: "go:crypto/internal/fips140/ecdh", Dst: "ecdh",
-		DropFiles: []string{"cast.go"},
 		KeepDecls: []string{"isZero", "isLess", "p256Order"},
-		NoTests:   true,
+		Patches: []patch{{
+			// Only the P-256 order is ported.
+			File: "order_test.go",
+			Old:  "if !bytes.Equal(elliptic.P224().Params().N.Bytes(), P224().N) {\n\t\tt.Errorf(\"P-224 order mismatch\")\n\t}\n\t",
+		}, {
+			File: "order_test.go", Old: "P256().N", New: "p256Order",
+		}, {
+			File: "order_test.go",
+			Old:  "\n\tif !bytes.Equal(elliptic.P384().Params().N.Bytes(), P384().N) {\n\t\tt.Errorf(\"P-384 order mismatch\")\n\t}\n\tif !bytes.Equal(elliptic.P521().Params().N.Bytes(), P521().N) {\n\t\tt.Errorf(\"P-521 order mismatch\")\n\t}",
+		}, {
+			// The CAST's key agreement, as p256.Exchanger computes it.
+			File: "cast.go",
+			Old:  "k := &PrivateKey{d: privateKey, pub: PublicKey{curve: p256}}\n\t\tpeer := &PublicKey{curve: p256, q: publicKey}\n\t\tgot, err := ecdh(P256(), k, peer)\n",
+			New:  "var p nistec.P256Point\n\t\tvar s nistec.P256Scratch\n\t\tif _, err := p.SetBytes(publicKey); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif _, err := p.ScalarMultScratch(&p, privateKey, &s); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tgot, err := p.BytesX()\n",
+		}},
 	},
 	{
 		// X25519 of RFC 7748 from crypto/ecdh, less its allocating key types.
@@ -645,7 +732,19 @@ func keccakF1600Words(a *[25]uint64) {`,
 			},
 		},
 	},
-	{Src: "go:crypto/internal/cryptotest/wycheproof", Dst: "wycheproof", Kit: true},
+	{
+		Src: "go:crypto/internal/cryptotest/wycheproof", Dst: "wycheproof", Kit: true,
+		Patches: []patch{{
+			// Vectors are vendored rather than fetched.
+			File: "wycheproof.go", Decl: "LoadVectorFile",
+			Old: "dir := *wycheproofDir\n\tif dir == \"\" {\n\t\tdir = cryptotest.FetchModule(\n\t\t\tt, \"github.com/c2sp/wycheproof\", wycheproofVersion)\n\t}\n\n\tcontent, err := os.ReadFile(path.Join(dir, \"testvectors_v1\", filename))\n\tif err != nil {\n\t\tt.Fatalf(\"missing Wycheproof vector file %q: %v\", filename, err)\n\t}\n\n\terr = json.Unmarshal",
+			New: "var content []byte\n\tif dir := *wycheproofDir; dir != \"\" {\n\t\tvar err error\n\t\tif content, err = os.ReadFile(path.Join(dir, \"testvectors_v1\", filename)); err != nil {\n\t\t\tt.Fatalf(\"missing Wycheproof vector file %q: %v\", filename, err)\n\t\t}\n\t} else {\n\t\tcontent = cryptotest.Vectors(t, \"wycheproof\", filename)\n\t}\n\n\terr := json.Unmarshal",
+		}, {
+			File: "wycheproof.go", Decl: "LoadVectorFile",
+			Old: "so we fetch the module at runtime and read the\n\t// vector JSON from that module clone.",
+			New: "so lcryptogen vendors the\n\t// vector files tests use into internal/lcryptotest/testdata.",
+		}},
+	},
 	{Src: "go:crypto/internal/cryptotest/x509limbo", Dst: "x509limbo", Kit: true},
 }
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lcrypto"
 	lt "github.com/soypat/lcrypto/internal/lcryptotest"
 	lx509 "github.com/soypat/lcrypto/x509"
 )
@@ -22,7 +23,7 @@ type chainCase struct {
 	chain       []*lt.Cert // Leaf first, as sent by the peer.
 	host        string
 	usage       lx509.ExtKeyUsage // Zero: server authentication.
-	since       string            // Go release whose crypto/x509 the case needs, if newer than go1.26.
+	since       string            // Go release whose crypto/x509 decides as wantErr, if newer than go1.26.
 	at          time.Time         // Zero: lt.Epoch.
 	wantErr     bool              // crypto/x509's verdict, checked to keep cases meaningful.
 	unsupported bool              // crypto/x509 accepts; Verifier fails closed with ErrUnsupported.
@@ -86,6 +87,17 @@ func stdUsage(u lx509.ExtKeyUsage) x509.ExtKeyUsage {
 		return x509.ExtKeyUsageClientAuth
 	}
 	return x509.ExtKeyUsageServerAuth
+}
+
+// newVerifier returns a Verifier configured with roots at time at, and limits of cfg.
+func newVerifier(t testing.TB, roots lcrypto.CertChain, at time.Time, cfg lx509.VerifierConfig) *lx509.Verifier {
+	t.Helper()
+	cfg.Roots, cfg.Nanotime = roots, func() int64 { return at.UnixNano() }
+	v := new(lx509.Verifier)
+	if err := v.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 func stdVerify(roots, chain lt.Chain, host string, usage x509.ExtKeyUsage, at time.Time) error {
@@ -282,9 +294,6 @@ func TestVerifyChain(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if c.since != "" && runtime.Version() < c.since {
-				t.Skip("crypto/x509 of", c.since, "needed")
-			}
 			if c.usage == 0 {
 				c.usage = lx509.ExtKeyUsageServerAuth
 			}
@@ -293,11 +302,23 @@ func TestVerifyChain(t *testing.T) {
 			}
 			roots, chain := ders(c.roots), ders(c.chain)
 			stdErr := stdVerify(roots, chain, c.host, stdUsage(c.usage), c.at)
+			if c.since != "" && runtime.Version() < c.since {
+				// This crypto/x509 predates the case: its verdict stands in for c.since's.
+				stdErr = nil
+				if c.wantErr {
+					stdErr = errors.New("rejected by crypto/x509 of " + c.since)
+				}
+			}
 			if (stdErr != nil) != c.wantErr {
 				t.Fatalf("crypto/x509 disagrees with the case: %v", stdErr)
 			}
-			v := &lx509.Verifier{Roots: roots, Time: func() time.Time { return c.at }}
-			err := v.VerifyChain(chain, c.usage, []byte(c.host))
+			v := newVerifier(t, roots, c.at, lx509.VerifierConfig{})
+			var err error
+			if c.host == "" {
+				err = v.VerifyChainAnyName(chain, c.usage)
+			} else {
+				err = v.VerifyChain(chain, c.usage, []byte(c.host))
+			}
 			switch {
 			case c.unsupported:
 				if !errors.Is(err, lx509.ErrUnsupported) {
@@ -356,8 +377,7 @@ func TestVerifyPeer(t *testing.T) {
 			if server {
 				vc.Name = []byte("example.com")
 			}
-			v := &lx509.Verifier{Roots: lt.Chain{root.DER}, Time: func() time.Time { return lt.Epoch }}
-			lt.Verifier(t, v, vc)
+			lt.Verifier(t, newVerifier(t, lt.Chain{root.DER}, lt.Epoch, lx509.VerifierConfig{}), vc)
 		}
 	}
 }
@@ -372,7 +392,7 @@ func TestCertificateVerifyScheme(t *testing.T) {
 	leaf384 := p.issue("p384", "leaf P-384", false, root, nil)
 	leaf521 := p.issue("p521", "leaf P-521", false, root, nil)
 	msg := lt.CertificateVerifyMsg(true, make([]byte, 32))
-	v := &lx509.Verifier{Roots: lt.Chain{root.DER}, Time: func() time.Time { return lt.Epoch }}
+	v := newVerifier(t, lt.Chain{root.DER}, lt.Epoch, lx509.VerifierConfig{})
 	for _, c := range []struct {
 		name       string
 		leaf       *lt.Cert

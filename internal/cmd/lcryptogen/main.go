@@ -16,16 +16,21 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -75,6 +80,11 @@ func generate(root string) (out map[string][]byte, inputs map[string]string, err
 	for i := range packages {
 		if err := genPackage(ts, root, &packages[i], out, inputs); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", packages[i].Src, err)
+		}
+	}
+	for _, vs := range vectorSuites {
+		if err := genVectors(root, vs, out, inputs); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", vs.Module, err)
 		}
 	}
 	lic, err := os.ReadFile(filepath.Join(root, "local/_go/LICENSE"))
@@ -128,7 +138,7 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 			return err
 		}
 		inputs[spec.Src+"/"+name] = hashOf(src)
-		isTest := strings.HasSuffix(name, "_test.go")
+		isTest := strings.HasSuffix(name, "_test.go") || name == "cast.go" // FIPS self-tests become tests.
 		if (isTest && spec.NoTests) || containsGlob(spec.DropFiles, name) {
 			continue
 		}
@@ -154,6 +164,11 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 	for _, job := range jobs {
 		if err := ps.applyPatches(job); err != nil {
 			return err
+		}
+		if job.name == "cast.go" {
+			if err := castToTest(job); err != nil {
+				return err
+			}
 		}
 	}
 	for i, n := range ps.patchHits {
@@ -293,7 +308,7 @@ func writeOutputs(root string, out map[string][]byte) error {
 	sort.Strings(keys)
 	for _, k := range keys {
 		p := filepath.Join(root, k)
-		if old, err := os.ReadFile(p); err == nil && bytes.Equal(old, out[k]) {
+		if old, err := os.ReadFile(p); err == nil && sameOutput(k, old, out[k]) {
 			continue
 		} else if err == nil && !bytes.HasPrefix(old, []byte(headerPrefix)) && !strings.HasSuffix(k, "LICENSE") && !strings.Contains(k, "/testdata/") {
 			return fmt.Errorf("refusing to overwrite hand-written %s", k)
@@ -359,8 +374,8 @@ func removeStale(root, dir string, out map[string][]byte) error {
 		if err != nil {
 			return err
 		}
-		if bytes.HasPrefix(b, []byte(headerPrefix)) {
-			return os.Remove(p)
+		if bytes.HasPrefix(b, []byte(headerPrefix)) || strings.HasPrefix(rel, kitDir+"/testdata/") {
+			return os.Remove(p) // Generated, or vendored vectors.
 		}
 		return nil
 	})
@@ -368,4 +383,113 @@ func removeStale(root, dir string, out map[string][]byte) error {
 		return err
 	}
 	return nil
+}
+
+// genVectors vendors the files of vs gzipped into kitDir/testdata.
+func genVectors(root string, vs vectorSuite, out map[string][]byte, inputs map[string]string) error {
+	if vs.Pin != "" {
+		p, _, err := srcDir(root, vs.Pin)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(b, []byte(strconv.Quote(vs.Version))) {
+			return fmt.Errorf("%s pins another version than %s", vs.Pin, vs.Version)
+		}
+		inputs[vs.Pin] = hashOf(b)
+	}
+	dir, key := filepath.Join(root, vectorsDir, vs.Dir), "vectors:"+vs.Module+"@"+vs.Version
+	if vs.Src != "" {
+		var err error
+		if dir, _, err = srcDir(root, vs.Src); err != nil {
+			return err
+		}
+		key = vs.Src
+	}
+	var names []string
+	for _, f := range vs.Files {
+		if vs.Src == "" {
+			names = append(names, f)
+			continue
+		}
+		m, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(f)))
+		if err != nil || len(m) == 0 {
+			return fmt.Errorf("%s: no files match %s", vs.Src, f)
+		}
+		for _, p := range m {
+			rel, _ := filepath.Rel(dir, p)
+			names = append(names, filepath.ToSlash(rel))
+		}
+	}
+	sort.Strings(names)
+	var tarball bytes.Buffer
+	tw := tar.NewWriter(&tarball)
+	for _, name := range names {
+		b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil {
+			return err
+		}
+		inputs[key+"/"+name] = hashOf(b)
+		switch {
+		case vs.Archive:
+			// No times, owners or modes beyond read: deterministic.
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(b)), Format: tar.FormatPAX}); err != nil {
+				return err
+			}
+			tw.Write(b)
+		case strings.HasSuffix(name, ".gz"):
+			out[kitDir+"/testdata/"+vs.Dir+"/"+path.Base(name)] = b
+		default:
+			gz, err := gzipBytes(b)
+			if err != nil {
+				return err
+			}
+			out[kitDir+"/testdata/"+vs.Dir+"/"+path.Base(name)+".gz"] = gz
+		}
+	}
+	if vs.Archive {
+		if err := tw.Close(); err != nil {
+			return err
+		}
+		gz, err := gzipBytes(tarball.Bytes())
+		if err != nil {
+			return err
+		}
+		out[kitDir+"/testdata/"+vs.Dir+".tar.gz"] = gz
+	}
+	return nil
+}
+
+// gzipBytes compresses b with no name or time in the header: deterministic.
+func gzipBytes(b []byte) ([]byte, error) {
+	var gz bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
+	w.Write(b)
+	err := w.Close()
+	return gz.Bytes(), err
+}
+
+// sameOutput reports whether generated file name holds want already. Gzipped
+// files compare uncompressed: compress/flate output may differ between Go releases.
+func sameOutput(name string, have, want []byte) bool {
+	if bytes.Equal(have, want) {
+		return true
+	}
+	if !strings.HasSuffix(name, ".gz") {
+		return false
+	}
+	a, err1 := gunzip(have)
+	b, err2 := gunzip(want)
+	return err1 == nil && err2 == nil && bytes.Equal(a, b)
+}
+
+func gunzip(b []byte) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
 }

@@ -48,7 +48,7 @@ func TestUpToDate(t *testing.T) {
 	}
 	for k, v := range out {
 		disk, err := os.ReadFile(filepath.Join(r, k))
-		if err != nil || !bytes.Equal(disk, v) {
+		if err != nil || !sameOutput(k, disk, v) {
 			t.Errorf("%s: stale, run go generate", k)
 		}
 	}

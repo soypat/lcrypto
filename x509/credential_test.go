@@ -7,7 +7,6 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"testing"
-	"time"
 
 	"github.com/soypat/lcrypto"
 	lecdsa "github.com/soypat/lcrypto/ecdsa"
@@ -19,7 +18,7 @@ func TestCredential(t *testing.T) {
 	p := &pki{t: t}
 	root := p.issue("rsa", "root", true, nil, nil)
 	inter := p.issue("p384", "inter", true, root, nil)
-	verifier := &lx509.Verifier{Roots: lt.Chain{root.DER}, Time: func() time.Time { return lt.Epoch }}
+	verifier := newVerifier(t, lt.Chain{root.DER}, lt.Epoch, lx509.VerifierConfig{})
 	for _, c := range []struct {
 		kind   string
 		scheme uint16
@@ -56,11 +55,12 @@ func TestCredential(t *testing.T) {
 					name += "/hedged"
 				}
 				t.Run(name, func(t *testing.T) {
-					cred := &lx509.Credential{}
+					cfg := lx509.CredentialConfig{Chain: chain, Key: format.der}
 					if !deterministic {
-						cred.Rand = lt.NewRand(7)
+						cfg.Rand = lt.NewRand(7)
 					}
-					if err := cred.SetKey(chain, format.der); err != nil {
+					cred := &lx509.Credential{}
+					if err := cred.Configure(cfg); err != nil {
 						t.Fatal(err)
 					}
 					lt.Credential(t, cred, verifier, c.scheme, lecdsa.P384SignatureMaxSize)
@@ -106,7 +106,7 @@ func digest(h crypto.Hash, msg []byte) []byte {
 	return d[:]
 }
 
-func TestCredentialSetKeyErrors(t *testing.T) {
+func TestCredentialConfigureErrors(t *testing.T) {
 	p := &pki{t: t}
 	root := p.issue("ec", "root", true, nil, nil)
 	leaf := p.issue("ec", "leaf", false, root, nil)
@@ -114,13 +114,7 @@ func TestCredentialSetKeyErrors(t *testing.T) {
 	leaf384 := p.issue("p384", "leaf 384", false, root, nil)
 	leafRSA := p.issue("rsa", "leaf RSA", false, root, nil)
 	leafEd := p.issue("ed25519", "leaf Ed25519", false, root, nil)
-	marshal := func(c *lt.Cert) []byte {
-		b, err := x509.MarshalPKCS8PrivateKey(c.Key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
+	marshal := func(c *lt.Cert) []byte { return marshalKey(t, c) }
 	sec1 := func(c *lt.Cert) []byte {
 		b, err := x509.MarshalECPrivateKey(c.Key.(*ecdsa.PrivateKey))
 		if err != nil {
@@ -150,18 +144,28 @@ func TestCredentialSetKeyErrors(t *testing.T) {
 		{"empty", lt.Chain{leaf.DER}, nil},
 	} {
 		var cred lx509.Credential
-		if err := cred.SetKey(tc.chain, tc.key); err == nil {
+		if err := cred.Configure(lx509.CredentialConfig{Chain: tc.chain, Key: tc.key}); err == nil {
 			t.Errorf("%s: accepted", tc.name)
 		}
 		if cred.Scheme([]uint16{lx509.SchemeECDSAP256SHA256, lx509.SchemeECDSAP384SHA384}) != 0 {
-			t.Errorf("%s: failed SetKey left a scheme", tc.name)
+			t.Errorf("%s: failed Configure left a scheme", tc.name)
 		}
 	}
 	var cred lx509.Credential
-	if err := cred.SetKey(lt.Chain{leaf.DER}, good); err != nil {
+	if err := cred.Configure(lx509.CredentialConfig{Chain: lt.Chain{leaf.DER}, Key: good}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cred.SetKey(lt.Chain{leaf.DER}, marshal(other)); err == nil || cred.NumCerts() != 0 {
-		t.Error("failed SetKey kept the previous key")
+	if err := cred.Configure(lx509.CredentialConfig{Chain: lt.Chain{leaf.DER}, Key: marshal(other)}); err == nil || cred.NumCerts() != 0 {
+		t.Error("failed Configure kept the previous key")
 	}
+}
+
+// marshalKey returns the PKCS #8 encoding of c's key.
+func marshalKey(t testing.TB, c *lt.Cert) []byte {
+	t.Helper()
+	b, err := x509.MarshalPKCS8PrivateKey(c.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

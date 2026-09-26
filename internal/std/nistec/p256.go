@@ -12,9 +12,7 @@ import (
 	"github.com/soypat/lcrypto/internal/std/constanttime"
 	"github.com/soypat/lcrypto/internal/std/cpu"
 	"github.com/soypat/lcrypto/internal/std/fiat"
-
 	"math/bits"
-
 	"unsafe"
 )
 

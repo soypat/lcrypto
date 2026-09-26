@@ -9,7 +9,6 @@ package ecdh
 
 import (
 	"github.com/soypat/lcrypto/internal/std/byteorder"
-
 	"math/bits"
 )
 

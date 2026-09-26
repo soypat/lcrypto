@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -20,38 +17,36 @@ import (
 
 // TestX509Limbo runs the x509-limbo corpus (https://x509-limbo.com) through
 // Verifier and crypto/x509, as crypto/x509's TestX509Limbo does. They must
-// agree, except that Verifier may fail closed with ErrUnsupported or refuse
-// more than MaxPeerCerts certificates. Where crypto/x509 departs from the
-// corpus' verdicts, its own test keeps the justification.
+// agree, except that Verifier may fail closed with ErrUnsupported. Where
+// crypto/x509 departs from the corpus' verdicts, its own test keeps the
+// justification, and neither checks CRLs, a maximum chain depth or email
+// names: those cases compare the rest of verification.
+//
+// The Verifier accepts the longest peer chain of the corpus: MaxPeerCerts
+// bounds work, not memory, so its default limit is a policy the corpus does
+// not test.
 func TestX509Limbo(t *testing.T) {
-	dir := cryptotest.FetchModule(t, x509limbo.X509LimboModule, x509limbo.X509LimboVersion)
-	b, err := os.ReadFile(filepath.Join(dir, "limbo.json"))
-	if err != nil {
-		t.Fatalf("error reading limbo.json: %v", err)
-	}
 	var limbo x509limbo.Limbo
-	if err := json.Unmarshal(b, &limbo); err != nil {
+	if err := json.Unmarshal(cryptotest.Vectors(t, "x509limbo", "limbo.json"), &limbo); err != nil {
 		t.Fatalf("failed to unmarshal limbo.json: %v", err)
 	}
-	var agree, unsupported, tooLong, skipped int
+	maxPeer := 0
+	for _, tc := range limbo.Testcases {
+		maxPeer = max(maxPeer, 1+len(tc.UntrustedIntermediates))
+	}
+	var agree, unsupported int
 	for _, tc := range limbo.Testcases {
 		t.Run(tc.Id, func(t *testing.T) {
-			res, skip := runLimbo(t, tc)
-			switch res {
+			switch runLimbo(t, tc, maxPeer) {
 			case limboAgree:
 				agree++
 			case limboUnsupported:
 				unsupported++
-			case limboTooLong:
-				tooLong++
-			case limboSkipped:
-				skipped++
-				t.Skip(skip)
 			}
 		})
 	}
-	t.Logf("%d cases: %d agree with crypto/x509, %d unsupported, %d over MaxPeerCerts, %d skipped",
-		len(limbo.Testcases), agree, unsupported, tooLong, skipped)
+	t.Logf("%d cases, longest peer chain %d: %d agree with crypto/x509, %d unsupported",
+		len(limbo.Testcases), maxPeer, agree, unsupported)
 }
 
 type limboResult int
@@ -60,15 +55,9 @@ const (
 	limboFailed limboResult = iota
 	limboAgree
 	limboUnsupported
-	limboTooLong
-	limboSkipped
 )
 
-// runLimbo runs tc, returning why it is skipped for limboSkipped.
-func runLimbo(t *testing.T, tc x509limbo.Testcase) (limboResult, string) {
-	if slices.Contains(tc.Features, x509limbo.FeatureHasCrl) || slices.Contains(tc.Features, x509limbo.FeatureMaxChainDepth) {
-		return limboSkipped, "neither Verifier nor crypto/x509 checks CRLs or takes a maximum depth"
-	}
+func runLimbo(t *testing.T, tc x509limbo.Testcase, maxPeer int) limboResult {
 	usage, stdUsage := lx509.ExtKeyUsageAny, x509.ExtKeyUsageAny
 	switch {
 	case len(tc.ExtendedKeyUsage) == 0:
@@ -77,19 +66,16 @@ func runLimbo(t *testing.T, tc x509limbo.Testcase) (limboResult, string) {
 	case slices.Equal(tc.ExtendedKeyUsage, []x509limbo.KnownEKUs{x509limbo.KnownEKUsClientAuth}):
 		usage, stdUsage = lx509.ExtKeyUsageClientAuth, x509.ExtKeyUsageClientAuth
 	default:
-		return limboSkipped, fmt.Sprintf("Verifier checks one of the TLS usages, not %v", tc.ExtendedKeyUsage)
+		t.Fatalf("Verifier checks one of the TLS usages, not %v: extend the test", tc.ExtendedKeyUsage)
 	}
-	var names []string
+	var names []string // DNS names and IP addresses: Verifier does not match email addresses.
 	if tc.ValidationKind == x509limbo.ValidationKindSERVER && tc.ExpectedPeerName != nil {
 		names = append(names, tc.ExpectedPeerName.Value)
 	} else if tc.ValidationKind == x509limbo.ValidationKindCLIENT {
 		for _, n := range tc.ExpectedPeerNames {
-			names = append(names, n.Value)
-		}
-	}
-	for _, n := range tc.ExpectedPeerNames {
-		if n.Kind == x509limbo.PeerKindRFC822 {
-			return limboSkipped, "Verifier does not match email addresses"
+			if n.Kind != x509limbo.PeerKindRFC822 {
+				names = append(names, n.Value)
+			}
 		}
 	}
 	at := time.Now()
@@ -107,10 +93,26 @@ func runLimbo(t *testing.T, tc x509limbo.Testcase) (limboResult, string) {
 	chain := append(peer, intermediates...)
 
 	stdErr := limboStd(roots, chain, names, stdUsage, at)
-	v := &lx509.Verifier{Roots: roots, Time: func() time.Time { return at }}
+	// Like crypto/x509's CertPool, trust the roots that parse: Configure
+	// rejects the others.
+	var parsed lt.Chain
+	for _, der := range roots {
+		var c lx509.Certificate
+		if c.Parse(der) == nil {
+			parsed = append(parsed, der)
+		}
+	}
+	if len(parsed) == 0 {
+		if stdErr == nil {
+			t.Errorf("no root parses; crypto/x509 accepts (limbo expects %s)", tc.ExpectedResult)
+			return limboFailed
+		}
+		return limboAgree
+	}
+	v := newVerifier(t, parsed, at, lx509.VerifierConfig{MaxPeerCerts: maxPeer})
 	var err error
 	if len(names) == 0 {
-		err = v.VerifyChain(chain, usage, nil)
+		err = v.VerifyChainAnyName(chain, usage)
 	}
 	for _, name := range names {
 		if err = v.VerifyChain(chain, usage, []byte(name)); err != nil {
@@ -122,16 +124,13 @@ func runLimbo(t *testing.T, tc x509limbo.Testcase) (limboResult, string) {
 		t.Errorf("accepted; crypto/x509: %v (limbo expects %s)", stdErr, tc.ExpectedResult)
 	case err != nil && stdErr == nil && errors.Is(err, lx509.ErrUnsupported):
 		t.Log("unsupported:", err)
-		return limboUnsupported, ""
-	case err != nil && stdErr == nil && len(chain) > lx509.MaxPeerCerts:
-		t.Log("over MaxPeerCerts:", err)
-		return limboTooLong, ""
+		return limboUnsupported
 	case err != nil && stdErr == nil:
 		t.Errorf("%v; crypto/x509 accepts (limbo expects %s)", err, tc.ExpectedResult)
 	default:
-		return limboAgree, ""
+		return limboAgree
 	}
-	return limboFailed, ""
+	return limboFailed
 }
 
 // limboStd verifies as crypto/x509's TestX509Limbo does: unparsable roots and

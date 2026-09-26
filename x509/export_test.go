@@ -1,3 +1,6 @@
 package x509
 
-var ParseIP = parseIP
+var (
+	ParseIP    = parseIP
+	RawSubject = rawSubject
+)

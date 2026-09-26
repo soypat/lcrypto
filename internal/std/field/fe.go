@@ -11,7 +11,6 @@ package field
 import (
 	"github.com/soypat/lcrypto/internal/std/byteorder"
 	"github.com/soypat/lcrypto/internal/std/subtle"
-
 	"math/bits"
 )
 

@@ -39,14 +39,19 @@ the generation program is in [`internal/cmd/cryptogen`](./internal/cmd/lcryptoge
 
 ## testing
 ```
-go test ./...                    # everything, fetching Wycheproof, x509-limbo and ed25519vectors with the go command
-go test -short ./...             # offline and quick
-LCRYPTO_OFFLINE=1 go test ./...  # offline, full length
-go test ./mlkem -million         # 1M accumulated ML-KEM vectors
-tinygo test ./x509               # external suites skip under TinyGo
+go test ./...             # everything, offline
+go test -short ./...      # quicker
+go test ./mlkem -million  # 1M accumulated ML-KEM vectors
+tinygo test ./...         # tinygo excludes some tests it cannot run
 ```
-the standard library's test helpers (`crypto/internal/cryptotest`, its Wycheproof and x509-limbo schemas) are also ported by lcryptogen, into [`internal/lcryptotest`](./internal/lcryptotest/).
+what runs:
+- upstream tests of the ported packages.
+- standard library conformance suites for AEAD, Block, Stream and Hash ([`internal/lcryptotest`](./internal/lcryptotest/)).
+- [Wycheproof](https://github.com/C2SP/wycheproof), [x509-limbo](https://github.com/C2SP/x509-limbo), [ed25519vectors](https://hdevalence.ca/blog/2020-10-04-its-25519am), NIST PKITS: vendored in [`internal/lcryptotest/testdata`](./internal/lcryptotest/testdata/), offline. add more via `vectorSuites` in lcryptogen's config.
+- FIPS 140-3 known-answer self-tests (CASTs) as `TestCAST` ([Go blog](https://go.dev/blog/fips140)).
+- [accumulated test vectors](https://words.filippo.io/accumulated/) for ML-KEM and cSHAKE.
+- tinygo tests exclude some of standard libraries that require `os/exec` and other features not in tinygo. list skipped tests with `tinygo test -v ./... 2>&1 | grep -- '--- SKIP'`.
 
 # sister project: lneto
-lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto https://github.com/soypat/lneto
+lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto's networking https://github.com/soypat/lneto
 

@@ -50,13 +50,25 @@ func fetch(root string) error {
 			return err
 		}
 	}
-	for _, src := range testInputs {
-		from, to := dirs(src)
-		if err := os.RemoveAll(to); err != nil {
+	for _, vs := range vectorSuites {
+		if vs.Src != "" {
+			from, to := dirs(vs.Src)
+			if err := os.RemoveAll(to); err != nil {
+				return err
+			}
+			if err := copyTree(from, to); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := fetchVectors(root, vs); err != nil {
 			return err
 		}
-		if err := copyTree(from, to); err != nil {
-			return err
+		if vs.Pin != "" {
+			from, to := dirs(vs.Pin)
+			if err := copyFile(from, to); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -127,4 +139,28 @@ func copyFile(from, to string) error {
 		return err
 	}
 	return os.WriteFile(to, b, fs.FileMode(0o644))
+}
+
+// fetchVectors downloads the module of vs and copies its files into local/_vectors.
+func fetchVectors(root string, vs vectorSuite) error {
+	cmd := exec.Command("go", "mod", "download", "-json", vs.Module+"@"+vs.Version)
+	cmd.Dir = os.TempDir() // Outside the module: do not touch go.mod.
+	b, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("downloading %s: %w", vs.Module, err)
+	}
+	var mod struct{ Dir string }
+	if err := json.Unmarshal(b, &mod); err != nil {
+		return err
+	}
+	to := filepath.Join(root, vectorsDir, vs.Dir)
+	if err := os.RemoveAll(to); err != nil {
+		return err
+	}
+	for _, f := range vs.Files {
+		if err := copyFile(filepath.Join(mod.Dir, f), filepath.Join(to, f)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

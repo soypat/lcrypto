@@ -11,14 +11,13 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
+	"github.com/soypat/lcrypto/internal/lcryptotest/quick"
 	"io"
 	"math/big"
 	"math/bits"
 	mathrand "math/rand"
 	"reflect"
 	"testing"
-	"testing/quick"
 )
 
 func (v Element) String() string {
@@ -108,7 +107,6 @@ func isInBounds(x *Element) bool {
 }
 
 func TestMultiplyDistributesOverAdd(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	multiplyDistributesOverAdd := func(x, y, z Element) bool {
 		// Compute t1 = (x+y)*z
 		t1 := new(Element)
@@ -125,7 +123,7 @@ func TestMultiplyDistributesOverAdd(t *testing.T) {
 		return t1.Equal(t2) == 1 && isInBounds(t1) && isInBounds(t2)
 	}
 
-	if err := quick.Check(multiplyDistributesOverAdd, quickCheckConfig(1024)); err != nil {
+	if err := quick.Check3(multiplyDistributesOverAdd, quickCheckConfig(1024)); err != nil {
 		t.Error(err)
 	}
 }
@@ -158,7 +156,6 @@ func TestMul64to128(t *testing.T) {
 }
 
 func TestSetBytesRoundTrip(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	f1 := func(in [32]byte, fe Element) bool {
 		fe.SetBytes(in[:])
 
@@ -168,7 +165,7 @@ func TestSetBytesRoundTrip(t *testing.T) {
 
 		return bytes.Equal(in[:], fe.Bytes()) && isInBounds(&fe)
 	}
-	if err := quick.Check(f1, nil); err != nil {
+	if err := quick.Check2(f1, nil); err != nil {
 		t.Errorf("failed bytes->FE->bytes round-trip: %v", err)
 	}
 
@@ -182,7 +179,7 @@ func TestSetBytesRoundTrip(t *testing.T) {
 		r.reduce()
 		return fe == r
 	}
-	if err := quick.Check(f2, nil); err != nil {
+	if err := quick.Check2(f2, nil); err != nil {
 		t.Errorf("failed FE->bytes->FE round-trip: %v", err)
 	}
 
@@ -219,7 +216,6 @@ func swapEndianness(buf []byte) []byte {
 }
 
 func TestBytesBigEquivalence(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	f1 := func(in [32]byte, fe, fe1 Element) bool {
 		fe.SetBytes(in[:])
 
@@ -236,7 +232,7 @@ func TestBytesBigEquivalence(t *testing.T) {
 
 		return bytes.Equal(fe.Bytes(), buf) && isInBounds(&fe) && isInBounds(&fe1)
 	}
-	if err := quick.Check(f1, nil); err != nil {
+	if err := quick.Check3(f1, nil); err != nil {
 		t.Error(err)
 	}
 }
@@ -415,7 +411,6 @@ func TestSelectSwap(t *testing.T) {
 }
 
 func TestMult32(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	mult32EquivalentToMul := func(x Element, y uint32) bool {
 		t1 := new(Element)
 		for i := 0; i < 100; i++ {
@@ -433,7 +428,7 @@ func TestMult32(t *testing.T) {
 		return t1.Equal(t2) == 1 && isInBounds(t1) && isInBounds(t2)
 	}
 
-	if err := quick.Check(mult32EquivalentToMul, quickCheckConfig(1024)); err != nil {
+	if err := quick.Check2(mult32EquivalentToMul, quickCheckConfig(1024)); err != nil {
 		t.Error(err)
 	}
 }
@@ -498,7 +493,6 @@ func TestSqrtRatio(t *testing.T) {
 }
 
 func TestSquareN(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	squareNMatchesRepeatSquare := func(x Element) bool {
 		for _, n := range []int{1, 2, 5, 10, 15, 50, 120} {
 			got := new(Element).SquareN(&x, n)
@@ -518,13 +512,12 @@ func TestSquareN(t *testing.T) {
 		return true
 	}
 
-	if err := quick.Check(squareNMatchesRepeatSquare, quickCheckConfig(1024)); err != nil {
+	if err := quick.Check1(squareNMatchesRepeatSquare, quickCheckConfig(1024)); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestFeMul(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	asmLikeGeneric := func(a, b Element) bool {
 		a1 := a
 		a2 := a
@@ -543,7 +536,7 @@ func TestFeMul(t *testing.T) {
 			b1 == b2 && isInBounds(&b2)
 	}
 
-	if err := quick.Check(asmLikeGeneric, quickCheckConfig(1024)); err != nil {
+	if err := quick.Check2(asmLikeGeneric, quickCheckConfig(1024)); err != nil {
 		t.Error(err)
 	}
 }

@@ -9,10 +9,9 @@ package ed25519
 
 import (
 	"bytes"
-	"unsafe"
-
 	"github.com/soypat/lcrypto/internal/std/edwards25519"
 	"github.com/soypat/lcrypto/internal/std/sha512"
+	"unsafe"
 )
 
 const (

@@ -2,9 +2,9 @@ package x509
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"sync"
-	"time"
 
 	"github.com/soypat/lcrypto"
 	"github.com/soypat/lcrypto/ecdsa"
@@ -25,13 +25,15 @@ const (
 )
 
 const (
-	// MaxChainLen is the longest chain a Verifier builds: leaf, intermediates
-	// and root.
+	// MaxChainLen is the longest chain a Verifier can build: leaf,
+	// intermediates and root. It sizes the Verifier's working memory, and
+	// bounds VerifierConfig.MaxChainLen.
 	MaxChainLen = 8
-	// MaxPeerCerts is the most certificates a peer may present.
-	MaxPeerCerts = 16
-	// maxSignatureChecks is crypto/x509's maxChainSignatureChecks.
-	maxSignatureChecks = 100
+	// DefaultMaxPeerCerts is VerifierConfig.MaxPeerCerts when zero.
+	DefaultMaxPeerCerts = 16
+	// DefaultMaxSignatureChecks is VerifierConfig.MaxSignatureChecks when
+	// zero: crypto/x509's maxChainSignatureChecks.
+	DefaultMaxSignatureChecks = 100
 )
 
 var (
@@ -42,8 +44,12 @@ var (
 	ErrScheme            = errors.New("x509: signature scheme does not suit the certificate key")
 
 	errNoRoots              = errors.New("x509: Verifier has no roots")
+	errNotConfigured        = errors.New("x509: Verifier not configured")
+	errNoClock              = errors.New("x509: VerifierConfig.Nanotime required")
+	errRootParse            = errors.New("x509: root certificate does not parse")
+	errLimit                = errors.New("x509: VerifierConfig limit out of range")
 	errIndex                = errors.New("x509: certificate index out of range")
-	errNoName               = errors.New("x509: expected server name required")
+	errNoName               = errors.New("x509: expected name required")
 	errChainLen             = errors.New("x509: peer sent no or too many certificates")
 	errUnhandledCritical    = errors.New("x509: unhandled critical extension")
 	errNotAuthorized        = errors.New("x509: certificate is not authorized to sign other certificates")
@@ -57,8 +63,8 @@ var (
 // Verifier implements [lcrypto.Verifier] with Go's crypto/x509 chain building
 // and crypto/tls CertificateVerify checks, heap allocation free:
 //
-//   - The leaf must chain to one of Roots through the peer's intermediates,
-//     every certificate within its validity period at Time.
+//   - The leaf must chain to one of the roots through the peer's intermediates,
+//     every certificate within its validity period.
 //   - Extended key usages are enforced down the chain as in crypto/x509.
 //   - A server must be valid for the expected name, a DNS name or IP literal.
 //   - The CertificateVerify signature must be the leaf key's under the scheme.
@@ -70,20 +76,84 @@ var (
 // explicit policy or a mapping of anyPolicy, and chains that need other curves,
 // are rejected with [ErrUnsupported]. There is no revocation checking.
 //
-// The zero Verifier trusts nothing. Set Roots, and Time where time.Now does not
-// return the wall clock, before first use and do not modify them after. A
-// Verifier is safe for concurrent use: calls are serialized over its working
-// memory. A Verifier is about 19 KiB on 32-bit platforms and 20 KiB on 64-bit
-// ones; declare it as a package variable on devices with small stacks.
+// The zero Verifier trusts nothing: call [Verifier.Configure] before use. A
+// Verifier is safe for concurrent use: calls, Configure included, are
+// serialized over its working memory. A Verifier is about 19 KiB on 32-bit
+// platforms and 20 KiB on 64-bit ones; declare it as a package variable on
+// devices with small stacks.
 type Verifier struct {
-	// Roots are the trust anchors as DER certificates.
-	Roots lcrypto.CertChain
-	// Time returns the current time. If nil, time.Now is used; on a device
-	// without a clock that rejects all certificates as not yet valid.
-	Time func() time.Time
+	mu        sync.Mutex
+	roots     lcrypto.CertChain
+	nanotime  func() int64
+	maxPeer   int
+	maxChain  int
+	maxChecks int
+	sc        verifyScratch
+}
 
-	mu sync.Mutex
-	sc verifyScratch
+// VerifierConfig configures a [Verifier]. The limits bound the work a peer can
+// cause; zero selects the default. Memory does not depend on them.
+type VerifierConfig struct {
+	// Roots are the trust anchors as DER certificates. Each must parse. They
+	// must not change while the Verifier uses them.
+	Roots lcrypto.CertChain
+	// Nanotime returns the wall-clock time in nanoseconds since the Unix
+	// epoch, as time.Now().UnixNano(). It is required. Unlike the monotonic
+	// Nanotime of lneto's tcp, it must be set from a real-time clock or NTP:
+	// a clock counting from boot makes every certificate not yet valid.
+	Nanotime func() int64
+	// MaxPeerCerts is the most certificates a peer may present, by default
+	// DefaultMaxPeerCerts.
+	MaxPeerCerts int
+	// MaxChainLen is the longest chain built, leaf through root, at most and
+	// by default MaxChainLen.
+	MaxChainLen int
+	// MaxSignatureChecks is the most signatures checked while building one
+	// chain, by default DefaultMaxSignatureChecks.
+	// On microcontrollers a peer can make each check cost up to seconds: set
+	// it near MaxChainLen, e.g. 8 to 16, as a valid chain needs one per link.
+	MaxSignatureChecks int
+}
+
+// Configure checks cfg and makes v verify against it. Every root is parsed
+// now, so a bad root fails here instead of in a handshake. On error v is left
+// unconfigured.
+func (v *Verifier) Configure(cfg VerifierConfig) error {
+	v.mu.Lock()
+	err := v.configure(cfg)
+	if err != nil {
+		v.roots = nil
+	}
+	v.mu.Unlock()
+	return err
+}
+
+func (v *Verifier) configure(cfg VerifierConfig) error {
+	if cfg.Roots == nil || cfg.Roots.NumCerts() == 0 {
+		return errNoRoots
+	}
+	if cfg.Nanotime == nil {
+		return errNoClock
+	}
+	if cfg.MaxPeerCerts < 0 || cfg.MaxChainLen < 0 || cfg.MaxChainLen > MaxChainLen || cfg.MaxSignatureChecks < 0 {
+		return errLimit
+	}
+	c := &v.sc.chain[0]
+	for i := range cfg.Roots.NumCerts() {
+		der, err := cfg.Roots.CertView(i)
+		if err != nil {
+			return err
+		}
+		if c.Parse(der) != nil {
+			return errRootParse
+		}
+	}
+	*c = Certificate{}
+	v.roots, v.nanotime = cfg.Roots, cfg.Nanotime
+	v.maxPeer = cmp.Or(cfg.MaxPeerCerts, DefaultMaxPeerCerts)
+	v.maxChain = cmp.Or(cfg.MaxChainLen, MaxChainLen)
+	v.maxChecks = cmp.Or(cfg.MaxSignatureChecks, DefaultMaxSignatureChecks)
+	return nil
 }
 
 var _ lcrypto.Verifier = (*Verifier)(nil)
@@ -119,30 +189,43 @@ func (v *Verifier) VerifyPeer(chainView lcrypto.CertChain, scheme uint16, peerIs
 }
 
 // VerifyChain checks chainView as VerifyPeer does, without a CertificateVerify
-// signature: its leaf must chain to Roots, allow usage (any usage if usage has
-// ExtKeyUsageAny) and be valid for name if name is not empty.
+// signature: its leaf must chain to the roots, allow usage (any usage if usage
+// has ExtKeyUsageAny) and be valid for name, a DNS name or IP literal, which
+// must not be empty. [Verifier.VerifyChainAnyName] skips the name check.
 func (v *Verifier) VerifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, name []byte) error {
+	if len(name) == 0 {
+		return errNoName
+	}
 	v.mu.Lock()
 	err := v.verifyChain(chainView, usage, name)
 	v.mu.Unlock()
 	return err
 }
 
+// VerifyChainAnyName is VerifyChain accepting the leaf whatever names it is
+// valid for: whoever holds its key is authenticated as any of them. Use it
+// only where the caller checks the identity itself, i.e. of a TLS client.
+func (v *Verifier) VerifyChainAnyName(chainView lcrypto.CertChain, usage ExtKeyUsage) error {
+	v.mu.Lock()
+	err := v.verifyChain(chainView, usage, nil)
+	v.mu.Unlock()
+	return err
+}
+
 func (v *Verifier) verifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, name []byte) error {
-	if v.Roots == nil || v.Roots.NumCerts() == 0 {
-		return errNoRoots
+	if v.roots == nil {
+		return errNotConfigured
 	}
 	nPeer := chainView.NumCerts()
-	if nPeer <= 0 || nPeer > MaxPeerCerts {
+	if nPeer <= 0 || nPeer > v.maxPeer {
 		return errChainLen
 	}
-	var t time.Time
-	if v.Time != nil {
-		t = v.Time()
-	} else {
-		t = time.Now()
+	ns := v.nanotime()
+	now, frac := ns/1e9, ns%1e9
+	if frac < 0 { // Before 1970: floor to the second.
+		now--
 	}
-	now, nowFrac := t.Unix(), t.Nanosecond() != 0
+	nowFrac := frac != 0
 
 	leaf := &v.sc.chain[0]
 	der, err := chainView.CertView(0)
@@ -226,10 +309,10 @@ func checkValid(c *Certificate, now int64, nowFrac bool) error {
 // whole chains.
 func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowFrac bool, usage ExtKeyUsage) error {
 	sc := &v.sc
-	nRoots := v.Roots.NumCerts()
+	nRoots := v.roots.NumCerts()
 	// Verify: a leaf that is itself a root is a chain of one.
 	for i := 0; i < nRoots; i++ {
-		der, err := v.Roots.CertView(i)
+		der, err := v.roots.CertView(i)
 		if err == nil && bytes.Equal(der, sc.chain[0].Raw) {
 			if !chainUsageOK(sc.chain[:1], usage) {
 				return ErrIncompatibleUsage
@@ -247,7 +330,7 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 	depth := 0 // sc.chain[:depth+1] is the chain so far.
 	sc.next[0] = 0
 	for depth >= 0 {
-		if depth+1 == MaxChainLen || sc.next[depth] >= nCandidates {
+		if depth+1 == v.maxChain || sc.next[depth] >= nCandidates {
 			depth-- // Exhausted: backtrack.
 			continue
 		}
@@ -257,16 +340,18 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 		var der []byte
 		var err error
 		if isRoot {
-			der, err = v.Roots.CertView(idx)
+			der, err = v.roots.CertView(idx)
 		} else {
 			der, err = peer.CertView(idx - nRoots + 1)
 		}
 		child, cand := &sc.chain[depth], &sc.chain[depth+1]
-		if err != nil || cand.Parse(der) != nil || !bytes.Equal(child.RawIssuer, cand.RawSubject) {
-			continue // findPotentialParents: unparsable or not the issuer.
+		// findPotentialParents: skip what is not the issuer or does not parse.
+		// The subject alone is read first: a full parse costs about 20 times more.
+		if err != nil || !bytes.Equal(child.RawIssuer, rawSubject(der)) || cand.Parse(der) != nil {
+			continue
 		}
 		checks++
-		if checks > maxSignatureChecks {
+		if checks > v.maxChecks {
 			return errSignatureLimit
 		}
 		if alreadyInChain(cand, sc.chain[:depth+1]) {

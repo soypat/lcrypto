@@ -11,21 +11,18 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
+	"io/fs"
 	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
 	lt "github.com/soypat/lcrypto/internal/lcryptotest"
+	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
 	lx509 "github.com/soypat/lcrypto/x509"
 )
-
-// stdTestdata is crypto/x509's testdata, fetched by lcryptogen.
-const stdTestdata = "../local/_go/crypto/x509/testdata"
 
 var (
 	corpusOnce sync.Once
@@ -103,17 +100,14 @@ func parseCorpus(t testing.TB) [][]byte {
 		pss.SignatureAlgorithm = x509.SHA384WithRSAPSS
 		corpus = append(corpus, lt.NewCert(t, pss, lt.RSAKey(t, 2048, 0), nil).DER)
 
-		files, _ := filepath.Glob(filepath.Join(stdTestdata, "nist-pkits/certs/*.crt"))
+		fsys := cryptotest.VectorFS(t, "x509")
+		files, _ := fs.Glob(fsys, "nist-pkits/certs/*.crt")
 		for _, f := range files {
-			b, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			corpus = append(corpus, b)
+			corpus = append(corpus, fsys[f].Data)
 		}
-		pems, _ := filepath.Glob(filepath.Join(stdTestdata, "*.pem"))
+		pems, _ := fs.Glob(fsys, "*.pem")
 		for _, f := range pems {
-			b, _ := os.ReadFile(f)
+			b := fsys[f].Data
 			for blk, rest := pem.Decode(b); blk != nil; blk, rest = pem.Decode(rest) {
 				corpus = append(corpus, blk.Bytes)
 			}
@@ -168,6 +162,9 @@ var knownParseDivergence = []string{
 func compareParse(der []byte) string {
 	var c lx509.Certificate
 	err := c.Parse(der)
+	if err == nil && !bytes.Equal(lx509.RawSubject(der), c.RawSubject) {
+		return "rawSubject differs from Parse's RawSubject"
+	}
 	std, stdErr := x509.ParseCertificate(der)
 	if stdErr != nil {
 		if err == nil {

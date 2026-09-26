@@ -11,10 +11,9 @@
 package chacha20poly1305
 
 import (
+	"errors"
 	"github.com/soypat/lcrypto/internal/std/chacha20"
 	"github.com/soypat/lcrypto/internal/std/poly1305"
-
-	"errors"
 )
 
 const (

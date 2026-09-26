@@ -8,9 +8,8 @@
 package field
 
 import (
-	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
+	"github.com/soypat/lcrypto/internal/lcryptotest/quick"
 	"testing"
-	"testing/quick"
 )
 
 func checkAliasingOneArg(f func(v, x *Element) *Element) func(v, x Element) bool {
@@ -89,7 +88,6 @@ func checkAliasingTwoArgs(f func(v, x, y *Element) *Element) func(v, x, y Elemen
 //
 // without any of the inputs getting clobbered by the output being written.
 func TestAliasing(t *testing.T) {
-	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	type target struct {
 		name     string
 		oneArgF  func(v, x *Element) *Element
@@ -140,9 +138,9 @@ func TestAliasing(t *testing.T) {
 		var err error
 		switch {
 		case tt.oneArgF != nil:
-			err = quick.Check(checkAliasingOneArg(tt.oneArgF), quickCheckConfig(256))
+			err = quick.Check2(checkAliasingOneArg(tt.oneArgF), quickCheckConfig(256))
 		case tt.twoArgsF != nil:
-			err = quick.Check(checkAliasingTwoArgs(tt.twoArgsF), quickCheckConfig(256))
+			err = quick.Check3(checkAliasingTwoArgs(tt.twoArgsF), quickCheckConfig(256))
 		}
 		if err != nil {
 			t.Errorf("%v: %v", tt.name, err)

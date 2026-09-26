@@ -29,17 +29,12 @@ var (
 // ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384 or ed25519 as crypto/ecdsa and
 // crypto/ed25519 do, without allocating.
 //
-// The zero Credential has no key: call SetKey. A Credential is safe for
-// concurrent use: calls are serialized over its working memory, about 15 KiB.
+// The zero Credential has no key: call [Credential.Configure]. A Credential is
+// safe for concurrent use: calls, Configure included, are serialized over its
+// working memory, about 15 KiB.
 type Credential struct {
-	// Rand is the entropy of hedged ECDSA signatures. If nil, signatures are
-	// deterministic per RFC 6979: secure without any entropy source, as the
-	// nonce derives from the key and message. With Rand, a broken entropy
-	// source still does not leak the key. Ed25519 signatures are always
-	// deterministic. Set before first use.
-	Rand io.Reader
-
 	mu     sync.Mutex
+	rand   io.Reader
 	chain  lcrypto.CertChain
 	scheme uint16
 	p256   ecdsa.P256Signer
@@ -48,27 +43,44 @@ type Credential struct {
 	d256   sha256.Digest
 	d512   sha512.Digest
 	digest [64]byte
-	leaf   Certificate // Scratch of SetKey.
+	leaf   Certificate // Scratch of Configure.
 }
 
 var _ lcrypto.Credential = (*Credential)(nil)
 
-// SetKey installs chain, leaf first, and the private key of its leaf. keyDER is
-// a PKCS #8 PrivateKeyInfo or SEC 1 ECPrivateKey, as crypto/x509's
-// ParsePKCS8PrivateKey and ParseECPrivateKey read them. SetKey fails if the key
-// is not the leaf certificate's. Chain must remain valid while c is in use.
-func (c *Credential) SetKey(chain lcrypto.CertChain, keyDER []byte) error {
+// CredentialConfig configures a [Credential].
+type CredentialConfig struct {
+	// Chain is the certificate chain, leaf first. It must not change while
+	// the Credential uses it.
+	Chain lcrypto.CertChain
+	// Key is the leaf's private key: a PKCS #8 PrivateKeyInfo or SEC 1
+	// ECPrivateKey, as crypto/x509's ParsePKCS8PrivateKey and
+	// ParseECPrivateKey read them. It is not retained; wipe it after.
+	Key []byte
+	// Rand is the entropy of hedged ECDSA signatures. If nil, signatures are
+	// deterministic per RFC 6979: secure without any entropy source, as the
+	// nonce derives from the key and message. With Rand, a broken entropy
+	// source still does not leak the key. Ed25519 signatures are always
+	// deterministic.
+	Rand io.Reader
+}
+
+// Configure installs cfg's chain and key, failing if the key is not the leaf
+// certificate's. On error c is left without a key.
+func (c *Credential) Configure(cfg CredentialConfig) error {
 	c.mu.Lock()
-	err := c.setKey(chain, keyDER)
+	err := c.configure(cfg.Chain, cfg.Key)
 	c.leaf = Certificate{}
 	if err != nil {
 		c.zeroize()
+	} else {
+		c.rand = cfg.Rand
 	}
 	c.mu.Unlock()
 	return err
 }
 
-func (c *Credential) setKey(chain lcrypto.CertChain, keyDER []byte) error {
+func (c *Credential) configure(chain lcrypto.CertChain, keyDER []byte) error {
 	c.zeroize()
 	if chain == nil || chain.NumCerts() == 0 {
 		return errChainLen
@@ -229,14 +241,14 @@ func (c *Credential) sign(sig, msg []byte, scheme uint16) (int, error) {
 	if scheme == SchemeECDSAP256SHA256 {
 		c.d256.Init()
 		c.d256.Write(msg)
-		return c.p256.SignASN1(sig, c.d256.Sum(c.digest[:0]), c.Rand)
+		return c.p256.SignASN1(sig, c.d256.Sum(c.digest[:0]), c.rand)
 	}
 	c.d512.Init384()
 	c.d512.Write(msg)
-	return c.p384.SignASN1(sig, c.d512.Sum(c.digest[:0]), c.Rand)
+	return c.p384.SignASN1(sig, c.d512.Sum(c.digest[:0]), c.rand)
 }
 
-// Zeroize wipes the private key; SetKey must be called before reuse.
+// Zeroize wipes the private key; Configure must be called before reuse.
 func (c *Credential) Zeroize() {
 	c.mu.Lock()
 	c.zeroize()
@@ -244,7 +256,7 @@ func (c *Credential) Zeroize() {
 }
 
 func (c *Credential) zeroize() {
-	c.chain, c.scheme = nil, 0
+	c.chain, c.scheme, c.rand = nil, 0, nil
 	c.p256.Zeroize()
 	c.p384.Zeroize()
 	c.ed.Zeroize()
@@ -255,24 +267,35 @@ func (c *Credential) zeroize() {
 
 // NumCerts implements [lcrypto.CertChain].
 func (c *Credential) NumCerts() int {
-	if c.chain == nil {
-		return 0
+	c.mu.Lock()
+	n := 0
+	if c.chain != nil {
+		n = c.chain.NumCerts()
 	}
-	return c.chain.NumCerts()
+	c.mu.Unlock()
+	return n
 }
 
 // Cert implements [lcrypto.CertChain].
 func (c *Credential) Cert(dst []byte, i int) (int, error) {
-	if c.chain == nil {
-		return 0, errNoCredential
+	c.mu.Lock()
+	n, err := 0, errNoCredential
+	if c.chain != nil {
+		n, err = c.chain.Cert(dst, i)
 	}
-	return c.chain.Cert(dst, i)
+	c.mu.Unlock()
+	return n, err
 }
 
-// CertView implements [lcrypto.CertChain].
+// CertView implements [lcrypto.CertChain]. The view is of the configured chain,
+// which outlives a later Configure or Zeroize of c.
 func (c *Credential) CertView(i int) ([]byte, error) {
-	if c.chain == nil {
-		return nil, errNoCredential
+	c.mu.Lock()
+	var view []byte
+	err := errNoCredential
+	if c.chain != nil {
+		view, err = c.chain.CertView(i)
 	}
-	return c.chain.CertView(i)
+	c.mu.Unlock()
+	return view, err
 }

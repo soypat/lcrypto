@@ -211,6 +211,22 @@ func (c *Certificate) Parse(der []byte) error {
 	return err
 }
 
+// rawSubject returns the subject Name of certificate der as Parse sets
+// RawSubject, reading only the fields before it: chain building compares it
+// to the issuer sought before parsing a candidate in full. It returns nil where
+// Parse fails before the subject.
+func rawSubject(der cryptobyte.String) []byte {
+	var cert, tbs, subject cryptobyte.String
+	if !der.ReadASN1(&cert, asn1.SEQUENCE) || !cert.ReadASN1(&tbs, asn1.SEQUENCE) ||
+		!tbs.SkipOptionalASN1(asn1.Tag(0).Constructed().ContextSpecific()) ||
+		!tbs.SkipASN1(asn1.INTEGER) || !tbs.SkipASN1(asn1.SEQUENCE) || // Serial, signature algorithm.
+		!tbs.SkipASN1(asn1.SEQUENCE) || !tbs.SkipASN1(asn1.SEQUENCE) || // Issuer, validity.
+		!tbs.ReadASN1Element(&subject, asn1.SEQUENCE) {
+		return nil
+	}
+	return subject
+}
+
 func (c *Certificate) parse(der []byte) error {
 	input := cryptobyte.String(der)
 	if !input.ReadASN1Element(&input, asn1.SEQUENCE) {
