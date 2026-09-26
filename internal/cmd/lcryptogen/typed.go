@@ -91,6 +91,9 @@ func (ts *typedState) check(path string, jobs []*fileJob, overlays map[string][]
 		if job.isTest {
 			continue
 		}
+		if ok, err := matchBuild(job.src, kitBuildTag); job.spec.Kit && (err != nil || !ok) {
+			continue
+		}
 		f, err := parser.ParseFile(ts.fset, job.name, job.src, parser.ParseComments)
 		if err != nil {
 			return nil, nil, nil, err
@@ -156,6 +159,9 @@ func readOverlays(root, dst string) (map[string][]byte, error) {
 // typedRules generates allocation-free variants of the package's outlined and
 // constructor functions, then rewrites calls to every known variant.
 func (ts *typedState) typedRules(root string, ps *pkgState, jobs []*fileJob) ([]*fileJob, error) {
+	if ps.spec.Kit {
+		return jobs, nil // Test support code: allocations do not matter.
+	}
 	path := modulePath + "/" + stdDir + "/" + ps.spec.Dst
 	overlays, err := readOverlays(root, stdDir+"/"+ps.spec.Dst)
 	if err != nil {
@@ -239,8 +245,8 @@ func (ts *typedState) typedRules(root string, ps *pkgState, jobs []*fileJob) ([]
 
 // finalCheck type checks the finished package, which later packages import.
 func (ts *typedState) finalCheck(root string, ps *pkgState, jobs []*fileJob) error {
-	path := modulePath + "/" + stdDir + "/" + ps.spec.Dst
-	overlays, err := readOverlays(root, stdDir+"/"+ps.spec.Dst)
+	path := modulePath + "/" + ps.spec.dir()
+	overlays, err := readOverlays(root, ps.spec.dir())
 	if err != nil {
 		return err
 	}

@@ -37,6 +37,16 @@ go generate -v ./...
 ```
 the generation program is in [`internal/cmd/cryptogen`](./internal/cmd/lcryptogen/) and all generated files live in [`internal/std`](./internal/std/) and contain information of how they were generated and from what upstream Go standard library file.
 
+## testing
+```
+go test ./...                    # everything, fetching Wycheproof, x509-limbo and ed25519vectors with the go command
+go test -short ./...             # offline and quick
+LCRYPTO_OFFLINE=1 go test ./...  # offline, full length
+go test ./mlkem -million         # 1M accumulated ML-KEM vectors
+tinygo test ./x509               # external suites skip under TinyGo
+```
+the standard library's test helpers (`crypto/internal/cryptotest`, its Wycheproof and x509-limbo schemas) are also ported by lcryptogen, into [`internal/lcryptotest`](./internal/lcryptotest/).
+
 # sister project: lneto
 lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto https://github.com/soypat/lneto
 

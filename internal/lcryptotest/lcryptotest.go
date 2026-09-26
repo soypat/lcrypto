@@ -3,11 +3,13 @@ package lcryptotest
 
 import (
 	"bytes"
+	"crypto/cipher"
 	"math/rand/v2"
 	"testing"
 	"unsafe"
 
 	"github.com/soypat/lcrypto"
+	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
 )
 
 // Bytes returns the memory of *v, padding included.
@@ -27,7 +29,9 @@ func IsZero[T any](v *T) bool {
 
 // AEAD checks the lcrypto.AEADCipher contract common to all implementations:
 // unkeyed behaviour, in-place round trip, tamper rejection, zero allocations and
-// that Zeroize wipes every byte of the cipher. c must be unkeyed.
+// that Zeroize wipes every byte of the cipher. It then runs the standard
+// library's cipher.AEAD conformance suite on ciphers keyed with key. c must be
+// unkeyed.
 func AEAD[T any, P interface {
 	*T
 	lcrypto.AEADCipher
@@ -99,6 +103,13 @@ func AEAD[T any, P interface {
 	if !IsZero((*T)(c)) {
 		t.Error("Zeroize left non-zero bytes")
 	}
+
+	t.Run("cryptotest", func(t *testing.T) {
+		cryptotest.TestAEAD(t, func() (cipher.AEAD, error) {
+			c := P(new(T))
+			return c, c.Rekey(key)
+		})
+	})
 }
 
 // Equal fails t if got != want.

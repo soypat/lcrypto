@@ -7,7 +7,8 @@ const (
 	goVersion      = "go1.27.1"
 	xcryptoVersion = "v0.57.0"
 	modulePath     = "github.com/soypat/lcrypto"
-	stdDir         = "internal/std" // Output root, relative to module root.
+	stdDir         = "internal/std"         // Output root, relative to module root.
+	kitDir         = "internal/lcryptotest" // Output root of Kit packages.
 )
 
 // pkgSpec describes one ported package.
@@ -30,6 +31,10 @@ type pkgSpec struct {
 	Name string
 	// NoTests skips porting _test.go files.
 	NoTests bool
+	// Kit ports test support code to kitDir/Dst rather than stdDir/Dst: build
+	// constraints are kept, imports of non-internal std packages are allowed and
+	// the allocation rules are skipped.
+	Kit bool
 	// Threads add a parameter to helper functions, see [pkgState.threadParams].
 	Threads []thread
 	// Hoists move locals into struct scratch space, see [pkgState.hoistLocals].
@@ -106,6 +111,27 @@ var importMap = map[string]string{
 	"golang.org/x/crypto/cryptobyte/asn1":        "cryptobyte/asn1",
 }
 
+// kitImportMap maps upstream test support imports, allowed in tests and Kit
+// packages only, to module-relative paths.
+var kitImportMap = map[string]string{
+	"internal/testenv":                      kitDir + "/testenv", // Hand-written.
+	"internal/race":                         kitDir + "/testenv",
+	"internal/msan":                         kitDir + "/testenv",
+	"internal/asan":                         kitDir + "/testenv",
+	"internal/testhash":                     kitDir + "/testhash",
+	"crypto/internal/cryptotest":            kitDir + "/cryptotest",
+	"crypto/internal/cryptotest/wycheproof": kitDir + "/wycheproof",
+	"crypto/internal/cryptotest/x509limbo":  kitDir + "/x509limbo",
+}
+
+// dir is the spec's output directory relative to the module root.
+func (s *pkgSpec) dir() string {
+	if s.Kit {
+		return kitDir + "/" + s.Dst
+	}
+	return stdDir + "/" + s.Dst
+}
+
 // importMapNonTest applies to non-test files only; tests may use the real std package.
 var importMapNonTest = map[string]string{
 	"crypto/subtle": "subtle",
@@ -140,6 +166,8 @@ var stripCalls = map[string]bool{
 	"impl.Register":             true,
 	"fipsSelfTest":              true,
 	"checkGenericIsExpected":    true,
+	// Test support: the port is always the latest module.
+	"MustMinimumFIPS140ModuleVersion": true,
 }
 
 // Blank imports removed with FIPS: the module integrity self-check.
@@ -150,6 +178,7 @@ var falseConds = map[string]bool{
 	"fips140Enforced()":  true,
 	"fips140.Enforced()": true,
 	"fips140.Enabled":    true,
+	"boring.Enabled":     true, // BoringCrypto, in test support code.
 }
 
 var hashMarshal = []string{"Digest.MarshalBinary", "Digest.AppendBinary", "Digest.UnmarshalBinary", "Digest.Clone", "consumeUint64"}
@@ -591,6 +620,33 @@ func keccakF1600Words(a *[25]uint64) {`,
 			{Func: "writeUint64", Via: "c", Type: "chacha20poly1305", Vars: []string{"buf:u64"}},
 		},
 	},
+
+	// Test support, ported to internal/lcryptotest for lcrypto's own tests.
+	{Src: "go:internal/testhash", Dst: "testhash", Kit: true},
+	{
+		Src: "go:crypto/internal/cryptotest", Dst: "cryptotest", Kit: true,
+		// Backend selection, FIPS module versions and cipher modes lcrypto lacks.
+		DropFiles: []string{"implementations.go", "fips140.go", "blockmode.go", "*_wycheproof_test.go"},
+		Patches: []patch{
+			{
+				File: "hash.go", Decl: "TestHash",
+				Old: `if boring.Enabled || fips140.Version() == "v1.0.0" {`,
+				New: "if _, ok := mh().(hash.Cloner); !ok { // lcrypto digests do not allocate clones.",
+			},
+			{
+				File: "methods.go", Decl: "NoExtraMethods",
+				Old:  "t.Helper()\n",
+				New:  "t.Helper()\n\tif runtime.Compiler == \"tinygo\" {\n\t\tt.Skip(\"TinyGo does not implement reflect.Type.Method\")\n\t}\n",
+			},
+			{
+				File: "allocations.go", Decl: "SkipTestAllocations",
+				Old: "if race.Enabled || msan.Enabled || asan.Enabled {",
+				New: "if testenv.SanitizersEnabled {",
+			},
+		},
+	},
+	{Src: "go:crypto/internal/cryptotest/wycheproof", Dst: "wycheproof", Kit: true},
+	{Src: "go:crypto/internal/cryptotest/x509limbo", Dst: "x509limbo", Kit: true},
 }
 
 // ghashIterator is the upstream range-over-func block iterator of ghash and its loop header.

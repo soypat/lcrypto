@@ -49,17 +49,19 @@ func TestUpToDate(t *testing.T) {
 			t.Errorf("%s: stale, run go generate", k)
 		}
 	}
-	filepath.WalkDir(filepath.Join(r, stdDir), func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(r, p)
-		b, _ := os.ReadFile(p)
-		if _, ok := out[filepath.ToSlash(rel)]; !ok && bytes.HasPrefix(b, []byte(headerPrefix)) {
-			t.Errorf("%s: stale generated file", rel)
-		}
-		return nil
-	})
+	for _, dir := range []string{stdDir, kitDir} {
+		filepath.WalkDir(filepath.Join(r, dir), func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(r, p)
+			b, _ := os.ReadFile(p)
+			if _, ok := out[filepath.ToSlash(rel)]; !ok && bytes.HasPrefix(b, []byte(headerPrefix)) {
+				t.Errorf("%s: stale generated file", rel)
+			}
+			return nil
+		})
+	}
 }
 
 // TestTinyGoAllocs builds the smoke programs in testdata for a microcontroller and

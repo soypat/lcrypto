@@ -133,6 +133,9 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 			continue
 		}
 		keep, err := keepFile(src)
+		if spec.Kit {
+			keep = true // Build constraints are kept and hold where the kit is used.
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -208,7 +211,7 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 			return fmt.Errorf("DropDecls %q matched nothing", name)
 		}
 	}
-	dst := stdDir + "/" + spec.Dst
+	dst := spec.dir()
 	if b := ps.fieldArrayFile(); b != nil {
 		jobs = append(jobs, &fileJob{spec: spec, name: "fields_gen.go", src: b, origin: origin, fields: true})
 	}
@@ -258,7 +261,7 @@ func copyTestdata(dir string, spec *pkgSpec, out map[string][]byte, inputs map[s
 		rel, _ := filepath.Rel(dir, p)
 		rel = filepath.ToSlash(rel)
 		inputs[spec.Src+"/"+rel] = hashOf(b)
-		out[stdDir+"/"+spec.Dst+"/"+rel] = b
+		out[spec.dir()+"/"+rel] = b
 		return nil
 	})
 	if errors.Is(err, fs.ErrNotExist) {
@@ -276,29 +279,12 @@ func containsGlob(patterns []string, name string) bool {
 	return false
 }
 
-// writeOutputs writes changed files and deletes stale generated ones under internal/std.
+// writeOutputs writes changed files and deletes stale generated ones under the output roots.
 func writeOutputs(root string, out map[string][]byte) error {
-	base := filepath.Join(root, stdDir)
-	err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	for _, dir := range []string{stdDir, kitDir} {
+		if err := removeStale(root, dir, out); err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
-		if _, ok := out[rel]; ok {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		if bytes.HasPrefix(b, []byte(headerPrefix)) {
-			return os.Remove(p)
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
 	}
 	keys := make([]string, 0, len(out))
 	for k := range out {
@@ -356,4 +342,30 @@ func moduleRoot() (string, error) {
 		}
 		dir = parent
 	}
+}
+
+// removeStale deletes generated files under dir that are no longer generated.
+func removeStale(root, dir string, out map[string][]byte) error {
+	err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if _, ok := out[rel]; ok {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if bytes.HasPrefix(b, []byte(headerPrefix)) {
+			return os.Remove(p)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }

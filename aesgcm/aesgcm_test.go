@@ -6,7 +6,9 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	"github.com/soypat/lcrypto"
 	"github.com/soypat/lcrypto/internal/lcryptotest"
+	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
 )
 
 func TestContract(t *testing.T) {
@@ -52,4 +54,13 @@ func BenchmarkSeal1K(b *testing.B) {
 	for b.Loop() {
 		c.Seal(buf[:0], nonce, buf, nil)
 	}
+}
+
+func TestWycheproof(t *testing.T) {
+	lcryptotest.WycheproofAEAD(t, "aes_gcm_test.json", func() lcrypto.AEADCipher { return new(Cipher) })
+}
+
+func TestNoExtraMethods(t *testing.T) {
+	var c lcrypto.AEADCipher = new(Cipher)
+	cryptotest.NoExtraMethods(t, &c)
 }

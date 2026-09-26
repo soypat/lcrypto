@@ -47,7 +47,10 @@ func applyEdits(src []byte, edits []edit) ([]byte, error) {
 
 // keepFile reports whether a file's build constraint holds for a pure Go build:
 // purego set, go1.N release tags up to the pinned version set, every other tag unset.
-func keepFile(src []byte) (bool, error) {
+func keepFile(src []byte) (bool, error) { return matchBuild(src, buildTag) }
+
+// matchBuild evaluates the //go:build line of src, if any, with tag.
+func matchBuild(src []byte, tag func(string) bool) (bool, error) {
 	for _, line := range strings.Split(string(src), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "package ") {
@@ -60,9 +63,18 @@ func keepFile(src []byte) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return expr.Eval(buildTag), nil
+		return expr.Eval(tag), nil
 	}
 	return true, nil
+}
+
+// kitBuildTag fixes the platform Kit packages are type checked for, whatever the host.
+func kitBuildTag(tag string) bool {
+	switch tag {
+	case "linux", "unix", "amd64", "gc":
+		return true
+	}
+	return buildTag(tag) && tag != "purego"
 }
 
 func buildTag(tag string) bool {
@@ -234,7 +246,9 @@ func (ps *pkgState) rewrite(job *fileJob) error {
 		return err
 	}
 	rw := &rewriter{ps: ps, job: job, fset: fset, file: f, src: job.src}
-	rw.stripBuildLines()
+	if !ps.spec.Kit {
+		rw.stripBuildLines()
+	}
 	if !job.decls {
 		rw.dropDecls()
 	}
@@ -252,7 +266,7 @@ func (ps *pkgState) rewrite(job *fileJob) error {
 			continue
 		}
 		rw.stripFIPS(fd)
-		if !job.isTest {
+		if !job.isTest && !ps.spec.Kit {
 			rw.constMakes(fd)
 			rw.hoistErrors(fd)
 			rw.xorInPlace(fd)
@@ -1023,7 +1037,7 @@ func (ps *pkgState) fixImports(job *fileJob) error {
 				continue
 			}
 			have[name] = true
-			np, err := ps.mapImport(p, job.isTest)
+			np, err := ps.mapImport(p, job.isTest || ps.spec.Kit)
 			if err != nil {
 				return fmt.Errorf("%s: %w", job.name, err)
 			}
@@ -1101,9 +1115,14 @@ func importName(is *ast.ImportSpec, p string) string {
 	return base
 }
 
+// mapImport maps upstream import p. Test code, isTest, may also import the test
+// support packages and non-internal std packages.
 func (ps *pkgState) mapImport(p string, isTest bool) (string, error) {
-	if strings.HasPrefix(p, modulePath+"/"+stdDir+"/") {
+	if strings.HasPrefix(p, modulePath+"/"+stdDir+"/") || strings.HasPrefix(p, modulePath+"/"+kitDir+"/") {
 		return p, nil // Already mapped.
+	}
+	if dst, ok := kitImportMap[p]; ok && isTest {
+		return modulePath + "/" + dst, nil
 	}
 	if dst, ok := importMap[p]; ok {
 		return modulePath + "/" + stdDir + "/" + dst, nil
@@ -1125,7 +1144,7 @@ func (ps *pkgState) mapImport(p string, isTest bool) (string, error) {
 
 func knownImport(name string) (string, bool) {
 	switch name {
-	case "unsafe", "errors", "strconv":
+	case "unsafe", "errors", "strconv", "runtime":
 		return name, true
 	case "binary":
 		return "encoding/binary", true
