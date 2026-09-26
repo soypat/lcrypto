@@ -1,0 +1,352 @@
+// Command lcryptogen ports the pinned Go standard library and golang.org/x/crypto
+// primitives into internal/std as pure Go, FIPS-free, allocation-averse packages.
+//
+// Usage, from anywhere in the module:
+//
+//	go run ./internal/cmd/lcryptogen                  # regenerate internal/std
+//	go run ./internal/cmd/lcryptogen -update-manifest # accept changed inputs
+//	go run ./internal/cmd/lcryptogen fetch            # recreate local/_go and local/_x
+//
+// Inputs live in local/_go (GOROOT/src of the pinned toolchain) and local/_x
+// (the pinned x/crypto module). Their hashes are checked against manifest.txt so a
+// regeneration is only ever a function of the pinned sources and this program.
+// Output files carry a "Code generated" header; files without it are hand-written
+// overlays and are never touched.
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"flag"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+func main() {
+	updateManifest := flag.Bool("update-manifest", false, "rewrite manifest.txt from current inputs")
+	flag.Parse()
+	root, err := moduleRoot()
+	if err == nil {
+		if flag.Arg(0) == "fetch" {
+			err = fetch(root)
+		} else {
+			err = run(root, *updateManifest)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "lcryptogen:", err)
+		os.Exit(1)
+	}
+}
+
+func run(root string, updateManifest bool) error {
+	out, inputs, err := generate(root)
+	if err != nil {
+		return err
+	}
+	manifest := renderManifest(inputs)
+	mpath := filepath.Join(root, "internal/cmd/lcryptogen/manifest.txt")
+	if updateManifest {
+		if err := os.WriteFile(mpath, manifest, 0o644); err != nil {
+			return err
+		}
+	} else if old, err := os.ReadFile(mpath); err != nil || !bytes.Equal(old, manifest) {
+		return fmt.Errorf("inputs differ from manifest.txt (run fetch, or -update-manifest to accept)")
+	}
+	return writeOutputs(root, out)
+}
+
+// generate ports every package and returns output files keyed by module-relative
+// path, plus hashes of every input file read.
+func generate(root string) (out map[string][]byte, inputs map[string]string, err error) {
+	out = map[string][]byte{}
+	inputs = map[string]string{}
+	ts := newTypedState(root)
+	for i := range packages {
+		if err := genPackage(ts, root, &packages[i], out, inputs); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", packages[i].Src, err)
+		}
+	}
+	lic, err := os.ReadFile(filepath.Join(root, "local/_go/LICENSE"))
+	if err != nil {
+		return nil, nil, err
+	}
+	inputs["go:LICENSE"] = hashOf(lic)
+	out[stdDir+"/LICENSE"] = lic
+	return out, inputs, nil
+}
+
+func srcDir(root, src string) (dir, origin string, err error) {
+	switch {
+	case strings.HasPrefix(src, "go:"):
+		p := strings.TrimPrefix(src, "go:")
+		return filepath.Join(root, "local/_go", p), goVersion + " src/" + p, nil
+	case strings.HasPrefix(src, "x:"):
+		p := strings.TrimPrefix(src, "x:")
+		return filepath.Join(root, "local/_x/crypto", p), "golang.org/x/crypto@" + xcryptoVersion + " " + p, nil
+	}
+	return "", "", fmt.Errorf("bad source %q", src)
+}
+
+func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byte, inputs map[string]string) error {
+	dir, origin, err := srcDir(root, spec.Src)
+	if err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	ps := &pkgState{
+		spec:       spec,
+		consts:     map[string]bool{},
+		topNames:   map[string]bool{},
+		dropHits:   map[string]int{},
+		errVars:    map[string]string{},
+		patchHits:  make([]int, len(spec.Patches)),
+		threadHits: make([]int, len(spec.Threads)),
+		keepHits:   map[string]int{},
+	}
+	var jobs []*fileJob
+	for _, e := range ents { // ReadDir sorts by name.
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return err
+		}
+		inputs[spec.Src+"/"+name] = hashOf(src)
+		isTest := strings.HasSuffix(name, "_test.go")
+		if (isTest && spec.NoTests) || containsGlob(spec.DropFiles, name) {
+			continue
+		}
+		keep, err := keepFile(src)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		if keep {
+			jobs = append(jobs, &fileJob{spec: spec, name: name, src: src, origin: origin + "/" + name, isTest: isTest})
+		}
+	}
+	if len(jobs) == 0 {
+		return errNoPackage
+	}
+	if !spec.NoTests {
+		if err := copyTestdata(dir, spec, out, inputs); err != nil {
+			return err
+		}
+	}
+	for _, job := range jobs {
+		if err := ps.applyPatches(job); err != nil {
+			return err
+		}
+	}
+	for i, n := range ps.patchHits {
+		if n == 0 {
+			return fmt.Errorf("patch %d (%s) matched no file", i, spec.Patches[i].File)
+		}
+	}
+	for _, job := range jobs {
+		if err := ps.threadParams(job); err != nil {
+			return fmt.Errorf("%s: %w", job.name, err)
+		}
+	}
+	for i, t := range spec.Threads {
+		if ps.threadHits[i] != len(t.Funcs) {
+			return fmt.Errorf("thread %s: matched %d of %d functions", t.Param, ps.threadHits[i], len(t.Funcs))
+		}
+	}
+	if len(spec.Decls) > 0 {
+		name := spec.Name
+		if name == "" {
+			f, err := parseFile(jobs[0])
+			if err != nil {
+				return err
+			}
+			name = strings.TrimSuffix(f.Name.Name, "_test")
+		}
+		b := "package " + name + "\n\n" + strings.Join(spec.Decls, "\n\n") + "\n"
+		jobs = append(jobs, &fileJob{spec: spec, name: "decls_gen.go", src: []byte(b), origin: origin, decls: true})
+	}
+	for _, job := range jobs {
+		f, err := parseFile(job)
+		if err != nil {
+			return err
+		}
+		if !job.isTest {
+			ps.pkgName = f.Name.Name
+			if spec.Name != "" {
+				ps.pkgName = spec.Name
+			}
+		}
+		ps.scan(f)
+	}
+	for _, job := range jobs {
+		if err := ps.rewrite(job); err != nil {
+			return fmt.Errorf("%s: %w", job.name, err)
+		}
+	}
+	for _, name := range spec.KeepDecls {
+		if ps.keepHits[name] == 0 {
+			return fmt.Errorf("KeepDecls %q matched nothing", name)
+		}
+	}
+	for _, name := range spec.DropDecls {
+		if ps.dropHits[name] == 0 {
+			return fmt.Errorf("DropDecls %q matched nothing", name)
+		}
+	}
+	dst := stdDir + "/" + spec.Dst
+	if b := ps.fieldArrayFile(); b != nil {
+		jobs = append(jobs, &fileJob{spec: spec, name: "fields_gen.go", src: b, origin: origin, fields: true})
+	}
+	if b := ps.errorsFile(); b != nil {
+		jobs = append(jobs, &fileJob{spec: spec, name: "errors_gen.go", src: b, origin: origin, hoisted: true})
+	}
+	for _, job := range jobs {
+		if err := ps.fixImports(job); err != nil {
+			return err
+		}
+	}
+	jobs, err = ts.typedRules(root, ps, jobs)
+	if err != nil {
+		return err
+	}
+	// Hoisting runs last so it can also move storage the typed rules introduced.
+	if err := ps.hoistLocals(jobs); err != nil {
+		return err
+	}
+	if err := ts.finalCheck(root, ps, jobs); err != nil {
+		return fmt.Errorf("final: %w", err)
+	}
+	for _, job := range jobs {
+		b, err := finish(job)
+		if err != nil {
+			return err
+		}
+		out[dst+"/"+job.name] = b
+	}
+	return nil
+}
+
+// copyTestdata carries the package's testdata directory, used by ported tests, verbatim.
+func copyTestdata(dir string, spec *pkgSpec, out map[string][]byte, inputs map[string]string) error {
+	td := filepath.Join(dir, "testdata")
+	err := filepath.WalkDir(td, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel)
+		inputs[spec.Src+"/"+rel] = hashOf(b)
+		out[stdDir+"/"+spec.Dst+"/"+rel] = b
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func containsGlob(patterns []string, name string) bool {
+	for _, p := range patterns {
+		if ok, _ := filepath.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// writeOutputs writes changed files and deletes stale generated ones under internal/std.
+func writeOutputs(root string, out map[string][]byte) error {
+	base := filepath.Join(root, stdDir)
+	err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if _, ok := out[rel]; ok {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if bytes.HasPrefix(b, []byte(headerPrefix)) {
+			return os.Remove(p)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	keys := make([]string, 0, len(out))
+	for k := range out {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		p := filepath.Join(root, k)
+		if old, err := os.ReadFile(p); err == nil && bytes.Equal(old, out[k]) {
+			continue
+		} else if err == nil && !bytes.HasPrefix(old, []byte(headerPrefix)) && !strings.HasSuffix(k, "LICENSE") && !strings.Contains(k, "/testdata/") {
+			return fmt.Errorf("refusing to overwrite hand-written %s", k)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, out[k], 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderManifest(inputs map[string]string) []byte {
+	keys := make([]string, 0, len(inputs))
+	for k := range inputs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "# lcryptogen inputs: %s, golang.org/x/crypto %s\n", goVersion, xcryptoVersion)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s  %s\n", inputs[k], k)
+	}
+	return b.Bytes()
+}
+
+func hashOf(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && bytes.Contains(b, []byte("module "+modulePath+"\n")) {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("not inside module " + modulePath)
+		}
+		dir = parent
+	}
+}
