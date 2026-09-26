@@ -35,7 +35,7 @@ generate files and print names of generated files with
 ```
 go generate -v ./...
 ```
-the generation program is in [`internal/cmd/cryptogen`](./internal/cmd/lcryptogen/)
+the generation program is in [`internal/cmd/cryptogen`](./internal/cmd/lcryptogen/) and all generated files live in [`internal/std`](./internal/std/) and contain information of how they were generated and from what upstream Go standard library file.
 
 # sister project: lneto
 lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto https://github.com/soypat/lneto

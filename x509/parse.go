@@ -23,6 +23,7 @@ const (
 	ECDSAWithSHA256
 	ECDSAWithSHA384
 	ECDSAWithSHA512
+	PureEd25519
 )
 
 // PublicKeyAlgorithm is the type of a certificate's subject public key.
@@ -35,7 +36,7 @@ const (
 	ECDSAP224                                    // Parsed, not verifiable.
 	ECDSAP384                                    // Verifiable: PublicKey is the uncompressed point.
 	ECDSAP521                                    // Parsed, not verifiable.
-	Ed25519                                      // Parsed, not verifiable.
+	Ed25519                                      // Verifiable: PublicKey is the 32 byte key.
 	DSA                                          // Parsed, not verifiable.
 	MLDSA                                        // Parsed, not verifiable.
 )
@@ -391,6 +392,8 @@ func signatureAlgorithm(oid, params []byte) SignatureAlgorithm {
 		return ECDSAWithSHA512
 	case bytes.Equal(oid, oidSignatureRSAPSS):
 		return pssAlgorithm(params)
+	case bytes.Equal(oid, oidPublicKeyEd25519) && len(params) == 0: // RFC 8410: parameters absent.
+		return PureEd25519
 	}
 	return UnknownSignatureAlgorithm
 }

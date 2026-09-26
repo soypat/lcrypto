@@ -2,7 +2,7 @@ package main
 
 import "strings"
 
-// Pinned inputs. Changing these requires `lcryptogen fetch` then `lcryptogen -update-manifest`.
+// Pinned inputs. Changing these requires `lcryptogen fetch` then `lcryptogen -update-manifest generate`.
 const (
 	goVersion      = "go1.27.1"
 	xcryptoVersion = "v0.57.0"
@@ -96,6 +96,8 @@ var importMap = map[string]string{
 	"crypto/internal/fips140/sha3":               "sha3",
 	"crypto/internal/fips140/mlkem":              "mlkem",
 	"crypto/internal/fips140/edwards25519/field": "field",
+	"crypto/internal/fips140/edwards25519":       "edwards25519",
+	"crypto/internal/fips140/ed25519":            "ed25519",
 	"crypto/internal/fips140/nistec":             "nistec",
 	"crypto/internal/fips140/nistec/fiat":        "fiat",
 	"golang.org/x/crypto/cryptobyte":             "cryptobyte",
@@ -313,6 +315,81 @@ func keccakF1600Words(a *[25]uint64) {`,
 		},
 	},
 	{Src: "go:crypto/internal/fips140/edwards25519/field", Dst: "field"},
+	{
+		// The precomputed base point tables, 30 KiB for constant time and 7.5 KiB
+		// for variable time multiplication, do not fit a microcontroller: the base
+		// point is multiplied like any other, with window tables the caller
+		// provides, as for P-256 and P-384.
+		Src: "go:crypto/internal/fips140/edwards25519", Dst: "edwards25519",
+		NoTests:   true, // They exercise the dropped tables.
+		DropDecls: []string{"basepointTable", "basepointTablePrecomp", "basepointNafTable", "basepointNafTablePrecomp", "Point.scalarBaseMultPrecomp"},
+		Patches: []patch{
+			// Variadic arguments are heap allocated by TinyGo.
+			{
+				File: "edwards25519.go",
+				Old:  "func checkInitialized(points ...*Point) {\n\tfor _, p := range points {\n\t\tif p.x == (field.Element{}) && p.y == (field.Element{}) {\n\t\t\tpanic(\"edwards25519: use of uninitialized Point\")\n\t\t}\n\t}\n}",
+				New:  "func checkInitialized(p *Point) {\n\tif p.x == (field.Element{}) && p.y == (field.Element{}) {\n\t\tpanic(\"edwards25519: use of uninitialized Point\")\n\t}\n}",
+			},
+			{File: "edwards25519.go", Old: "checkInitialized(p, q)", New: "checkInitialized(p)\n\tcheckInitialized(q)", Count: 2},
+			{File: "edwards25519.go", Old: "checkInitialized(v, u)", New: "checkInitialized(v)\n\tcheckInitialized(u)"},
+			{
+				File: "scalarmult.go",
+				Old:  "func (v *Point) ScalarBaseMult(x *Scalar) *Point {\n\tbasepointTable := basepointTable()",
+				New: "func (v *Point) ScalarBaseMult(x *Scalar) *Point {\n\treturn v.scalarMult(x, generator, new(projLookupTable))\n}\n\n" +
+					"func (v *Point) scalarBaseMultPrecomp(x *Scalar) *Point {\n\tbasepointTable := basepointTable()",
+			},
+			{
+				File: "scalarmult.go",
+				Old:  "func (v *Point) ScalarMult(x *Scalar, q *Point) *Point {\n\tcheckInitialized(q)\n\n\tvar table projLookupTable\n\ttable.FromP3(q)",
+				New: "func (v *Point) ScalarMult(x *Scalar, q *Point) *Point {\n\treturn v.scalarMult(x, q, new(projLookupTable))\n}\n\n" +
+					"// scalarMult is ScalarMult with the caller's table memory, which it overwrites.\n" +
+					"func (v *Point) scalarMult(x *Scalar, q *Point, table *projLookupTable) *Point {\n\tcheckInitialized(q)\n\n\ttable.FromP3(q)",
+			},
+			{
+				File: "scalarmult.go",
+				Old:  "func (v *Point) VarTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar) *Point {",
+				New: "func (v *Point) VarTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar) *Point {\n\treturn v.varTimeDoubleScalarBaseMult(a, A, b, new(nafLookupTable5), new(nafLookupTable5))\n}\n\n" +
+					"// varTimeDoubleScalarBaseMult is VarTimeDoubleScalarBaseMult with the caller's\n" +
+					"// table memory, which it overwrites. The base point gets a width 5 table too.\n" +
+					"func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTable, bTable *nafLookupTable5) *Point {",
+			},
+			{
+				File: "scalarmult.go",
+				Old: "\tbasepointNafTable := basepointNafTable()\n\tvar aTable nafLookupTable5\n\taTable.FromP3(A)\n" +
+					"\t// Because the basepoint is fixed, we can use a wider NAF\n\t// corresponding to a bigger table.\n" +
+					"\taNaf := a.nonAdjacentForm(5)\n\tbNaf := b.nonAdjacentForm(8)",
+				New: "\taTable.FromP3(A)\n\tbTable.FromP3(generator)\n\taNaf := a.nonAdjacentForm(5)\n\tbNaf := b.nonAdjacentForm(5)",
+			},
+			{File: "scalarmult.go", Old: "multB := &affineCached{}", New: "multB := &projCached{}"},
+			{File: "scalarmult.go", Old: "basepointNafTable.SelectInto(multB, bNaf[i])\n\t\t\ttmp1.AddAffine(v, multB)", New: "bTable.SelectInto(multB, bNaf[i])\n\t\t\ttmp1.Add(v, multB)"},
+			{File: "scalarmult.go", Old: "basepointNafTable.SelectInto(multB, -bNaf[i])\n\t\t\ttmp1.SubAffine(v, multB)", New: "bTable.SelectInto(multB, -bNaf[i])\n\t\t\ttmp1.Sub(v, multB)"},
+		},
+	},
+	{
+		// Pure Ed25519 (RFC 8032). Keys carry the window tables of the base point
+		// multiplications, which edwards25519 takes from its callers.
+		Src: "go:crypto/internal/fips140/ed25519", Dst: "ed25519",
+		DropFiles: []string{"cast.go"}, // FIPS self tests.
+		KeepDecls: []string{
+			"seedSize", "publicKeySize", "privateKeySize", "signatureSize", "sha512Size",
+			"PrivateKey", "PublicKey", "newPrivateKeyFromSeed", "precomputePrivateKey", "newPublicKey",
+			"domPrefixPure", "sign", "signWithDom", "verify", "verifyWithDom",
+		},
+		Patches: []patch{
+			{File: "ed25519.go", Old: "\tprefix [sha512Size / 2]byte\n", New: "\tprefix [sha512Size / 2]byte\n\tsc     edwards25519.Scratch\n"},
+			{File: "ed25519.go", Old: "\taBytes [32]byte\n", New: "\taBytes [32]byte\n\tsc     edwards25519.Scratch\n"},
+			{File: "ed25519.go", Old: "(&edwards25519.Point{}).ScalarBaseMult(s)", New: "(&edwards25519.Point{}).ScalarBaseMultScratch(s, &priv.sc)"},
+			{File: "ed25519.go", Old: "(&edwards25519.Point{}).ScalarBaseMult(r)", New: "(&edwards25519.Point{}).ScalarBaseMultScratch(r, &priv.sc)"},
+			{File: "ed25519.go", Old: "VarTimeDoubleScalarBaseMult(k, minusA, S)", New: "VarTimeDoubleScalarBaseMultScratch(k, minusA, S, &pub.sc)"},
+		},
+		// A Digest is 1000 bytes and Sum returns the buffer it is given: into the
+		// keys, one digest and buffer for the hashes computed one after another.
+		Hoists: []hoist{
+			{Func: "precomputePrivateKey", Via: "priv", Type: "PrivateKey", Vars: []string{"hsObj:h", "hArr:digest"}},
+			{Func: "signWithDom", Via: "priv", Type: "PrivateKey", Vars: []string{"mhObj:h", "messageDigestArr:digest", "khObj:h", "hramDigestArr:digest"}},
+			{Func: "verifyWithDom", Via: "pub", Type: "PublicKey", Vars: []string{"khObj:h", "hramDigestArr:digest"}},
+		},
+	},
 	{
 		Src: "go:crypto/internal/fips140/nistec/fiat", Dst: "fiat",
 		DropFiles: []string{"cast.go", "p224*.go", "p521*.go", "benchmark_test.go"},

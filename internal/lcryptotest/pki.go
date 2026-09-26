@@ -3,6 +3,7 @@ package lcryptotest
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -104,6 +105,16 @@ func RSAKey(t testing.TB, bits, i int) *rsa.PrivateKey {
 	return rsaKeys[bits][i]
 }
 
+// Ed25519Key returns a new Ed25519 key.
+func Ed25519Key(t testing.TB) ed25519.PrivateKey {
+	t.Helper()
+	_, k, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
 // ECKey returns a new ECDSA key on curve.
 func ECKey(t testing.TB, curve elliptic.Curve) *ecdsa.PrivateKey {
 	t.Helper()
@@ -134,6 +145,13 @@ func CertificateVerifyMsg(server bool, transcriptHash []byte) []byte {
 // to test their rejection.
 func SignCertificateVerify(t testing.TB, key crypto.Signer, scheme uint16, msg []byte) []byte {
 	t.Helper()
+	if scheme == 0x0807 {
+		sig, err := key.Sign(nil, msg, crypto.Hash(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sig
+	}
 	var h crypto.Hash
 	switch scheme {
 	case 0x0403, 0x0804, 0x0401:
@@ -268,6 +286,12 @@ func VerifyCertificateVerify(chain lcrypto.CertChain, scheme uint16, msg, sig []
 	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
 		return err
+	}
+	if pub, ok := leaf.PublicKey.(ed25519.PublicKey); ok {
+		if scheme != 0x0807 || !ed25519.Verify(pub, msg, sig) {
+			return errors.New("lcryptotest: Ed25519 verification failure")
+		}
+		return nil
 	}
 	var h crypto.Hash
 	var digest []byte

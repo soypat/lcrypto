@@ -307,12 +307,15 @@ func variantDecl(src []byte, f *ast.File, fd *ast.FuncDecl, ctors map[string]boo
 		if len(body) != 1 || len(first.Results) != 1 {
 			return ""
 		}
-		lit, ok := addrOfLit(first.Results[0], tname.Name)
-		if !ok {
+		v = "into"
+		if lit, ok := addrOfLit(first.Results[0], tname.Name); ok {
+			init = zeroThenAssign(text, v, tname.Name, lit) + "\n\treturn " + v
+		} else if chain, ok := newChain(first.Results[0], text); ok && chain != "" && isNew(chainRoot(first.Results[0]), tname.Name) {
+			// return new(T).M(...): methods of T returning *T.
+			init = fmt.Sprintf("*%s = %s{}\n\treturn %s%s", v, tname.Name, v, chain)
+		} else {
 			return ""
 		}
-		v = "into"
-		init = zeroThenAssign(text, v, tname.Name, lit) + "\n\treturn " + v
 	case *ast.AssignStmt:
 		// v := &T{...} or v := new(T); ...; return v
 		if first.Tok != token.DEFINE || len(first.Lhs) != 1 || len(first.Rhs) != 1 {

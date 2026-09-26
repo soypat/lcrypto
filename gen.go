@@ -5,4 +5,4 @@ package lcrypto
 // (downloaded to the module cache if missing), checked against manifest.txt by
 // the generator.
 //go:generate go run ./internal/cmd/lcryptogen fetch
-//go:generate go run ./internal/cmd/lcryptogen
+//go:generate go run ./internal/cmd/lcryptogen generate

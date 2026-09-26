@@ -45,6 +45,8 @@ func (p *pki) key(kind string) crypto.Signer {
 		return lt.RSAKey(p.t, 4096, 0)
 	case "p384":
 		return lt.ECKey(p.t, elliptic.P384())
+	case "ed25519":
+		return lt.Ed25519Key(p.t)
 	case "p521":
 		return lt.ECKey(p.t, elliptic.P521())
 	}
@@ -141,6 +143,9 @@ func TestVerifyChain(t *testing.T) {
 	inter384 := p.issue("p384", "inter P-384", true, rootRSA, pss(x509.SHA256WithRSA))
 	leafOfInter384 := p.issue("ec", "leaf under P-384 inter", false, inter384, pss(x509.ECDSAWithSHA384))
 	leafOfInter384SHA512 := p.issue("ec", "leaf under P-384 SHA-512", false, inter384, pss(x509.ECDSAWithSHA512))
+	rootEd := p.issue("ed25519", "root Ed25519", true, nil, nil)
+	interEd := p.issue("ed25519", "inter Ed25519", true, rootEd, nil)
+	leafOfEd := p.issue("ec", "leaf under Ed25519", false, interEd, nil)
 	root521 := p.issue("p521", "root P-521", true, nil, nil)
 	leaf521 := p.issue("ec", "leaf under P-521", false, root521, nil)
 
@@ -270,6 +275,8 @@ func TestVerifyChain(t *testing.T) {
 		{name: "P-384 intermediate", roots: certs(rootRSA), chain: certs(leafOfInter384, inter384), host: "example.com"},
 		{name: "P-384 with SHA-512", roots: certs(rootRSA), chain: certs(leafOfInter384SHA512, inter384)},
 		{name: "P-384 wrong root", roots: certs(rootEC), chain: certs(leafOfInter384, inter384), wantErr: true},
+		{name: "Ed25519 chain", roots: certs(rootEd), chain: certs(leafOfEd, interEd), host: "example.com"},
+		{name: "Ed25519 wrong root", roots: certs(rootEC), chain: certs(leafOfEd, interEd), wantErr: true},
 		{name: "P-521 CA", roots: certs(root521), chain: certs(leaf521), unsupported: true},
 		{name: "P-384 leaf", roots: certs(rootEC), chain: certs(leafOf384)},
 	}
@@ -324,6 +331,7 @@ func TestVerifyPeer(t *testing.T) {
 	leafEC := p.issue("ec", "leaf EC", false, inter, both)
 	leafRSA := p.issue("rsa", "leaf RSA", false, inter, both)
 	leaf384 := p.issue("p384", "leaf P-384", false, inter, both)
+	leafEd := p.issue("ed25519", "leaf Ed25519", false, inter, both)
 	transcript := make([]byte, 48)
 	for _, c := range []struct {
 		leaf   *lt.Cert
@@ -331,6 +339,7 @@ func TestVerifyPeer(t *testing.T) {
 	}{
 		{leafEC, lx509.SchemeECDSAP256SHA256},
 		{leaf384, lx509.SchemeECDSAP384SHA384},
+		{leafEd, lx509.SchemeEd25519},
 		{leafRSA, lx509.SchemeRSAPSSSHA256},
 		{leafRSA, lx509.SchemeRSAPSSSHA384},
 		{leafRSA, lx509.SchemeRSAPSSSHA512},

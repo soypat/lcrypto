@@ -7,6 +7,7 @@ import (
 	"github.com/soypat/lcrypto/aesgcm"
 	"github.com/soypat/lcrypto/chacha20poly1305"
 	"github.com/soypat/lcrypto/ecdsa"
+	"github.com/soypat/lcrypto/ed25519"
 	"github.com/soypat/lcrypto/p256"
 	"github.com/soypat/lcrypto/rsa"
 	"github.com/soypat/lcrypto/sha256"
@@ -29,6 +30,8 @@ var (
 	certVerifier     x509.Verifier
 	cred             x509.Credential
 	signer           ecdsa.P384Signer
+	edSigner         ed25519.Signer
+	edVerifier       ed25519.Verifier
 	sigBuf           [ecdsa.P384SignatureMaxSize]byte
 	certs            x509.Chain
 
@@ -91,6 +94,11 @@ func main() {
 	n, err := signer.SignASN1(sigBuf[:], shared[0][:], &rand)
 	println(n, err == nil)
 	signer.Zeroize()
+	edSigner.SetSeed(modulus[:ed25519.SeedSize])
+	edSigner.Sign(sigBuf[:], modulus[:])
+	pub, _ := edSigner.PublicKey()
+	println(edVerifier.Verify(pub, modulus[:], sigBuf[:ed25519.SignatureSize]) == nil)
+	edSigner.Zeroize()
 }
 
 func exchange(client, server lcrypto.Exchanger) bool {

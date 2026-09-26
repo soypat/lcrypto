@@ -27,22 +27,29 @@ func TestCredential(t *testing.T) {
 	}{
 		{"ec", lx509.SchemeECDSAP256SHA256, crypto.SHA256},
 		{"p384", lx509.SchemeECDSAP384SHA384, crypto.SHA384},
+		{"ed25519", lx509.SchemeEd25519, 0},
 	} {
 		leaf := p.issue(c.kind, "leaf "+c.kind, false, inter, nil)
-		key := leaf.Key.(*ecdsa.PrivateKey)
-		pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+		pkcs8, err := x509.MarshalPKCS8PrivateKey(leaf.Key)
 		if err != nil {
 			t.Fatal(err)
 		}
-		sec1, err := x509.MarshalECPrivateKey(key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		chain := lt.Chain{leaf.DER, inter.DER}
-		for _, format := range []struct {
+		formats := []struct {
 			name string
 			der  []byte
-		}{{"PKCS8", pkcs8}, {"SEC1", sec1}} {
+		}{{"PKCS8", pkcs8}}
+		if key, ok := leaf.Key.(*ecdsa.PrivateKey); ok {
+			sec1, err := x509.MarshalECPrivateKey(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			formats = append(formats, struct {
+				name string
+				der  []byte
+			}{"SEC1", sec1})
+		}
+		chain := lt.Chain{leaf.DER, inter.DER}
+		for _, format := range formats {
 			for _, deterministic := range []bool{true, false} {
 				name := c.kind + "/" + format.name
 				if !deterministic {
@@ -64,7 +71,11 @@ func TestCredential(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						want, err := key.Sign(nil, digest(c.hash, msg), c.hash)
+						signed := msg
+						if c.hash != 0 {
+							signed = digest(c.hash, msg)
+						}
+						want, err := leaf.Key.Sign(nil, signed, c.hash)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -102,6 +113,7 @@ func TestCredentialSetKeyErrors(t *testing.T) {
 	other := p.issue("ec", "other", false, root, nil)
 	leaf384 := p.issue("p384", "leaf 384", false, root, nil)
 	leafRSA := p.issue("rsa", "leaf RSA", false, root, nil)
+	leafEd := p.issue("ed25519", "leaf Ed25519", false, root, nil)
 	marshal := func(c *lt.Cert) []byte {
 		b, err := x509.MarshalPKCS8PrivateKey(c.Key)
 		if err != nil {
@@ -127,6 +139,9 @@ func TestCredentialSetKeyErrors(t *testing.T) {
 		{"P-256 key for P-384 leaf", lt.Chain{leaf384.DER}, sec1(leaf)},
 		{"RSA leaf", lt.Chain{leafRSA.DER}, marshal(leafRSA)},
 		{"RSA key", lt.Chain{leaf.DER}, marshal(leafRSA)},
+		{"Ed25519 key for P-256 leaf", lt.Chain{leaf.DER}, marshal(leafEd)},
+		{"P-256 key for Ed25519 leaf", lt.Chain{leafEd.DER}, marshal(leaf)},
+		{"other Ed25519 key", lt.Chain{leafEd.DER}, marshal(p.issue("ed25519", "other Ed25519", false, root, nil))},
 		{"no chain", lt.Chain{}, good},
 		{"nil chain", nil, good},
 		{"garbage leaf", lt.Chain{good}, good},

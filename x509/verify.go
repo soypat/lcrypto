@@ -8,6 +8,7 @@ import (
 
 	"github.com/soypat/lcrypto"
 	"github.com/soypat/lcrypto/ecdsa"
+	"github.com/soypat/lcrypto/ed25519"
 	"github.com/soypat/lcrypto/rsa"
 	"github.com/soypat/lcrypto/sha256"
 	"github.com/soypat/lcrypto/sha512"
@@ -17,6 +18,7 @@ import (
 const (
 	SchemeECDSAP256SHA256 = 0x0403 // ecdsa_secp256r1_sha256
 	SchemeECDSAP384SHA384 = 0x0503 // ecdsa_secp384r1_sha384
+	SchemeEd25519         = 0x0807 // ed25519
 	SchemeRSAPSSSHA256    = 0x0804 // rsa_pss_rsae_sha256
 	SchemeRSAPSSSHA384    = 0x0805 // rsa_pss_rsae_sha384
 	SchemeRSAPSSSHA512    = 0x0806 // rsa_pss_rsae_sha512
@@ -61,8 +63,9 @@ var (
 //   - A server must be valid for the expected name, a DNS name or IP literal.
 //   - The CertificateVerify signature must be the leaf key's under the scheme.
 //
-// Certificates may carry RSA keys of 1024 to 4096 bits and ECDSA P-256 and P-384 keys and
-// be signed with PKCS #1 v1.5, PSS or ECDSA over SHA-256, SHA-384 or SHA-512.
+// Certificates may carry RSA keys of 1024 to 4096 bits, ECDSA P-256 and P-384
+// keys and Ed25519 keys, and be signed with Ed25519 or with PKCS #1 v1.5, PSS
+// or ECDSA over SHA-256, SHA-384 or SHA-512.
 // Chains through CAs with name constraints, a policy constraint requiring
 // explicit policy or a mapping of anyPolicy, and chains that need other curves,
 // are rejected with [ErrUnsupported]. There is no revocation checking.
@@ -70,7 +73,7 @@ var (
 // The zero Verifier trusts nothing. Set Roots, and Time where time.Now does not
 // return the wall clock, before first use and do not modify them after. A
 // Verifier is safe for concurrent use: calls are serialized over its working
-// memory. A Verifier is about 15 KiB on 32-bit platforms and 16 KiB on 64-bit
+// memory. A Verifier is about 19 KiB on 32-bit platforms and 20 KiB on 64-bit
 // ones; declare it as a package variable on devices with small stacks.
 type Verifier struct {
 	// Roots are the trust anchors as DER certificates.
@@ -93,6 +96,7 @@ type verifyScratch struct {
 	d512   sha512.Digest
 	ec     ecdsa.P256Verifier
 	ec384  ecdsa.P384Verifier
+	ed     ed25519.Verifier
 	rsa    rsa.Verifier
 }
 
@@ -169,6 +173,11 @@ func (v *Verifier) verifyCertificateVerify(leaf *Certificate, scheme uint16, msg
 			return ErrScheme
 		}
 		return sc.ec.VerifyASN1(leaf.PublicKey, sc.hash(rsa.SHA256, msg), sig)
+	case SchemeEd25519:
+		if leaf.PublicKeyAlgorithm != Ed25519 {
+			return ErrScheme
+		}
+		return sc.ed.Verify(leaf.PublicKey, msg, sig)
 	case SchemeECDSAP384SHA384:
 		if leaf.PublicKeyAlgorithm != ECDSAP384 {
 			return ErrScheme
@@ -360,6 +369,12 @@ func (v *Verifier) checkSignatureFrom(c, parent *Certificate) error {
 		return errConstraint
 	}
 	sc := &v.sc
+	if c.SignatureAlgorithm == PureEd25519 {
+		if parent.PublicKeyAlgorithm != Ed25519 {
+			return errKeyMismatch
+		}
+		return sc.ed.Verify(parent.PublicKey, c.RawTBSCertificate, c.Signature)
+	}
 	var h rsa.Hash
 	var pss bool
 	switch c.SignatureAlgorithm {
