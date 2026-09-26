@@ -1,8 +1,10 @@
 package x509_test
 
 import (
+	"crypto/x509"
 	"sync"
 	"testing"
+	"time"
 
 	lt "github.com/soypat/lcrypto/internal/lcryptotest"
 	lx509 "github.com/soypat/lcrypto/x509"
@@ -27,6 +29,8 @@ func TestVerifierConfigure(t *testing.T) {
 		{"negative MaxChainLen", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxChainLen: -1}},
 		{"MaxChainLen over capacity", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxChainLen: lx509.MaxChainLen + 1}},
 		{"negative MaxSignatureChecks", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxSignatureChecks: -1}},
+		{"MinRSABits below rsa.MinBits", lx509.VerifierConfig{Roots: good, Nanotime: clock, MinRSABits: 512}},
+		{"MinRSABits above rsa.MaxBits", lx509.VerifierConfig{Roots: good, Nanotime: clock, MinRSABits: 8192}},
 	} {
 		v := newVerifier(t, good, lt.Epoch, lx509.VerifierConfig{})
 		if err := v.Configure(tc.cfg); err == nil {
@@ -110,4 +114,67 @@ func TestConcurrentConfigure(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestMinRSABits checks the RSA minimum applies to signing keys and the leaf.
+func TestMinRSABits(t *testing.T) {
+	p := &pki{t: t}
+	root1024 := p.issue("rsa1024", "root RSA-1024", true, nil, nil)
+	leafUnder1024 := p.issue("ec", "leaf under RSA-1024", false, root1024, nil)
+	root := p.issue("rsa", "root RSA-2048", true, nil, nil)
+	leaf1024 := p.issue("rsa1024", "leaf RSA-1024", false, root, nil)
+	leaf2048 := p.issue("rsa", "leaf RSA-2048", false, root, nil)
+	for _, tc := range []struct {
+		name    string
+		root    *lt.Cert
+		leaf    *lt.Cert
+		min     int
+		wantErr bool
+	}{
+		{"1024 CA, default", root1024, leafUnder1024, 0, true},
+		{"1024 CA, 1024", root1024, leafUnder1024, 1024, false},
+		{"1024 leaf, default", root, leaf1024, 0, true},
+		{"1024 leaf, 1024", root, leaf1024, 1024, false},
+		{"2048 leaf, default", root, leaf2048, 0, false},
+		{"2048 leaf, 3072", root, leaf2048, 3072, true},
+	} {
+		v := newVerifier(t, lt.Chain{tc.root.DER}, lt.Epoch, lx509.VerifierConfig{MinRSABits: tc.min})
+		if err := v.VerifyChain(lt.Chain{tc.leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.com")); (err != nil) != tc.wantErr {
+			t.Errorf("%s: got %v, want error %t", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+// TestAlerts checks the alert of each kind of rejection.
+func TestAlerts(t *testing.T) {
+	p := &pki{t: t}
+	root := p.issue("ec", "root", true, nil, nil)
+	other := p.issue("ec", "other root", true, nil, nil)
+	leaf := p.issue("ec", "leaf", false, root, nil)
+	expired := p.issue("ec", "expired", false, root, func(c *x509.Certificate) { c.NotAfter = lt.Epoch.Add(-time.Second) })
+	v := newVerifier(t, lt.Chain{root.DER}, lt.Epoch, lx509.VerifierConfig{})
+	msg := lt.CertificateVerifyMsg(true, make([]byte, 32))
+	sig := lt.SignCertificateVerify(t, leaf.Key, lx509.SchemeECDSAP256SHA256, msg)
+	for _, tc := range []struct {
+		name  string
+		err   error
+		alert uint8
+	}{
+		{"unknown authority", v.VerifyChain(lt.Chain{p.issue("ec", "stranger", false, other, nil).DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertUnknownCA},
+		{"expired", v.VerifyChain(lt.Chain{expired.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateExpired},
+		{"wrong name", v.VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.org")), alertBadCertificate},
+		{"garbage", v.VerifyChain(lt.Chain{[]byte{0x30, 0}}, lx509.ExtKeyUsageAny, []byte("example.com")), alertBadCertificate},
+		{"no certificates", v.VerifyChain(lt.Chain{}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateRequired},
+		{"bad CertificateVerify", v.VerifyPeer(lt.Chain{leaf.DER}, lx509.SchemeECDSAP256SHA256, true, []byte("example.com"), msg[1:], sig), alertDecryptError},
+		{"unconfigured", new(lx509.Verifier).VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertInternalError},
+	} {
+		if tc.err == nil {
+			t.Errorf("%s: accepted", tc.name)
+		} else if a := alertOf(t, tc.err); a != tc.alert {
+			t.Errorf("%s: %v: alert %d, want %d", tc.name, tc.err, a, tc.alert)
+		}
+	}
+	if alertOf(t, lx509.ErrUnsupported) != alertUnsupportedCertificate {
+		t.Error("ErrUnsupported: want unsupported_certificate")
+	}
 }

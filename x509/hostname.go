@@ -1,10 +1,5 @@
 package x509
 
-import "errors"
-
-// ErrHostname is returned when a certificate is not valid for the expected name.
-var ErrHostname = errors.New("x509: certificate is not valid for the expected name")
-
 // VerifyHostname returns nil if c is valid for host, following crypto/x509's
 // Certificate.VerifyHostname: IP literals, optionally in square brackets, are
 // matched against IP address names; other names case-insensitively against DNS

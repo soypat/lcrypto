@@ -2,7 +2,6 @@ package x509
 
 import (
 	"bytes"
-	"errors"
 	"unicode/utf8"
 
 	"github.com/soypat/lcrypto/internal/std/cryptobyte"
@@ -110,58 +109,6 @@ type Certificate struct {
 	RequireExplicitPolicy bool
 	MapsAnyPolicy         bool
 }
-
-// Errors are crypto/x509's parse errors.
-var (
-	errMalformedCert         = errors.New("x509: malformed certificate")
-	errMalformedTBS          = errors.New("x509: malformed tbs certificate")
-	errMalformedVersion      = errors.New("x509: malformed version")
-	errInvalidVersion        = errors.New("x509: invalid version")
-	errMalformedSerial       = errors.New("x509: malformed serial number")
-	errNegativeSerial        = errors.New("x509: negative serial number")
-	errMalformedSigAlg       = errors.New("x509: malformed signature algorithm identifier")
-	errMalformedAlg          = errors.New("x509: malformed algorithm identifier")
-	errSigAlgMismatch        = errors.New("x509: inner and outer signature algorithm identifiers don't match")
-	errMalformedOID          = errors.New("x509: malformed OID")
-	errMalformedParams       = errors.New("x509: malformed parameters")
-	errMalformedIssuer       = errors.New("x509: malformed issuer")
-	errMalformedValidity     = errors.New("x509: malformed validity")
-	errMalformedTime         = errors.New("x509: malformed time")
-	errMalformedSPKI         = errors.New("x509: malformed spki")
-	errMalformedPKAlg        = errors.New("x509: malformed public key algorithm identifier")
-	errMalformedSPK          = errors.New("x509: malformed subjectPublicKey")
-	errMalformedUniqueID     = errors.New("x509: malformed unique identifier")
-	errMalformedExtensions   = errors.New("x509: malformed extensions")
-	errMalformedExtension    = errors.New("x509: malformed extension")
-	errDuplicateExtension    = errors.New("x509: certificate contains duplicate extension")
-	errMalformedSignature    = errors.New("x509: malformed signature")
-	errTrailingData          = errors.New("x509: trailing data")
-	errInvalidRDN            = errors.New("x509: invalid RDNSequence")
-	errRSAParams             = errors.New("x509: RSA key missing NULL parameters")
-	errRSAKey                = errors.New("x509: invalid RSA public key")
-	errECParams              = errors.New("x509: invalid ECDSA parameters")
-	errECCurve               = errors.New("x509: unsupported elliptic curve")
-	errECKey                 = errors.New("x509: invalid ECDSA public key")
-	errEd25519Key            = errors.New("x509: invalid Ed25519 public key")
-	errDSAKey                = errors.New("x509: invalid DSA public key")
-	errMLDSAKey              = errors.New("x509: invalid ML-DSA public key")
-	errKeyUsage              = errors.New("x509: invalid key usage")
-	errBasicConstraints      = errors.New("x509: invalid basic constraints")
-	errSAN                   = errors.New("x509: invalid subject alternative names")
-	errAKID                  = errors.New("x509: invalid authority key identifier")
-	errSKID                  = errors.New("x509: invalid subject key identifier")
-	errEKU                   = errors.New("x509: invalid extended key usages")
-	errCRLDP                 = errors.New("x509: invalid CRL distribution points")
-	errPolicyConstraints     = errors.New("x509: invalid policy constraints extension")
-	errNameConstraints       = errors.New("x509: invalid NameConstraints extension")
-	errPolicies              = errors.New("x509: invalid certificate policies")
-	errPolicyMappings        = errors.New("x509: invalid policy mappings extension")
-	errInhibitAnyPolicy      = errors.New("x509: invalid inhibit any policy extension")
-	errAIA                   = errors.New("x509: invalid authority info access")
-	errMarkedCritical        = errors.New("x509: extension incorrectly marked critical")
-	errTooManyExtensions     = errors.New("x509: too many extensions")
-	errUnsupportedSigPadding = errors.New("x509: signature or key BIT STRING not byte aligned")
-)
 
 // maxExtensions bounds the quadratic duplicate extension check.
 const maxExtensions = 64

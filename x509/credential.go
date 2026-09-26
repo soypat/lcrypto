@@ -2,7 +2,6 @@ package x509
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"sync"
 
@@ -13,15 +12,6 @@ import (
 	"github.com/soypat/lcrypto/internal/std/cryptobyte/asn1"
 	"github.com/soypat/lcrypto/sha256"
 	"github.com/soypat/lcrypto/sha512"
-)
-
-var (
-	errKeyDER       = errors.New("x509: failed to parse EC private key")
-	errKeyCurve     = errors.New("x509: private key curve does not match the certificate")
-	errKeyPublic    = errors.New("x509: private key does not match the certificate public key")
-	errLeafKey      = errors.New("x509: certificate key is not ECDSA P-256, P-384 or Ed25519")
-	errNoCredential = errors.New("x509: Credential has no key")
-	errSignScheme   = errors.New("x509: signature scheme not offered by the Credential")
 )
 
 // Credential implements [lcrypto.Credential] with an ECDSA P-256 or P-384 key
@@ -83,7 +73,7 @@ func (c *Credential) Configure(cfg CredentialConfig) error {
 func (c *Credential) configure(chain lcrypto.CertChain, keyDER []byte) error {
 	c.zeroize()
 	if chain == nil || chain.NumCerts() == 0 {
-		return errChainLen
+		return errNoCerts
 	}
 	der, err := chain.CertView(0)
 	if err != nil {
@@ -279,7 +269,8 @@ func (c *Credential) NumCerts() int {
 // Cert implements [lcrypto.CertChain].
 func (c *Credential) Cert(dst []byte, i int) (int, error) {
 	c.mu.Lock()
-	n, err := 0, errNoCredential
+	var n int
+	var err error = errNoCredential
 	if c.chain != nil {
 		n, err = c.chain.Cert(dst, i)
 	}
@@ -292,7 +283,7 @@ func (c *Credential) Cert(dst []byte, i int) (int, error) {
 func (c *Credential) CertView(i int) ([]byte, error) {
 	c.mu.Lock()
 	var view []byte
-	err := errNoCredential
+	var err error = errNoCredential
 	if c.chain != nil {
 		view, err = c.chain.CertView(i)
 	}

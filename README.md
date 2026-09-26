@@ -35,6 +35,7 @@ generate files and print names of generated files with
 ```
 go generate -v ./...
 ```
+this also runs [stringer](https://pkg.go.dev/golang.org/x/tools/cmd/stringer) for error messages: `go install golang.org/x/tools/cmd/stringer@latest`.
 the generation program is in [`internal/cmd/cryptogen`](./internal/cmd/lcryptogen/) and all generated files live in [`internal/std`](./internal/std/) and contain information of how they were generated and from what upstream Go standard library file.
 
 ## testing

@@ -4,7 +4,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -17,7 +16,9 @@ import (
 
 // TestX509Limbo runs the x509-limbo corpus (https://x509-limbo.com) through
 // Verifier and crypto/x509, as crypto/x509's TestX509Limbo does. They must
-// agree, except that Verifier may fail closed with ErrUnsupported. Where
+// agree, except that Verifier may fail closed with ErrUnsupported, or reject
+// by a policy stricter than crypto/x509's: a leaf key usage without
+// digitalSignature, or an RSA key under MinRSABits. Where
 // crypto/x509 departs from the corpus' verdicts, its own test keeps the
 // justification, and neither checks CRLs, a maximum chain depth or email
 // names: those cases compare the rest of verification.
@@ -34,7 +35,7 @@ func TestX509Limbo(t *testing.T) {
 	for _, tc := range limbo.Testcases {
 		maxPeer = max(maxPeer, 1+len(tc.UntrustedIntermediates))
 	}
-	var agree, unsupported int
+	var agree, unsupported, stricter int
 	for _, tc := range limbo.Testcases {
 		t.Run(tc.Id, func(t *testing.T) {
 			switch runLimbo(t, tc, maxPeer) {
@@ -42,11 +43,13 @@ func TestX509Limbo(t *testing.T) {
 				agree++
 			case limboUnsupported:
 				unsupported++
+			case limboStricter:
+				stricter++
 			}
 		})
 	}
-	t.Logf("%d cases, longest peer chain %d: %d agree with crypto/x509, %d unsupported",
-		len(limbo.Testcases), maxPeer, agree, unsupported)
+	t.Logf("%d cases, longest peer chain %d: %d agree with crypto/x509, %d unsupported, %d stricter",
+		len(limbo.Testcases), maxPeer, agree, unsupported, stricter)
 }
 
 type limboResult int
@@ -55,6 +58,7 @@ const (
 	limboFailed limboResult = iota
 	limboAgree
 	limboUnsupported
+	limboStricter
 )
 
 func runLimbo(t *testing.T, tc x509limbo.Testcase, maxPeer int) limboResult {
@@ -119,12 +123,18 @@ func runLimbo(t *testing.T, tc x509limbo.Testcase, maxPeer int) limboResult {
 			break
 		}
 	}
+	if err != nil {
+		alertOf(t, err)
+	}
 	switch {
 	case err == nil && stdErr != nil:
 		t.Errorf("accepted; crypto/x509: %v (limbo expects %s)", stdErr, tc.ExpectedResult)
-	case err != nil && stdErr == nil && errors.Is(err, lx509.ErrUnsupported):
+	case err != nil && stdErr == nil && err == lx509.ErrUnsupported:
 		t.Log("unsupported:", err)
 		return limboUnsupported
+	case err != nil && stdErr == nil && lx509.Stricter(err):
+		t.Logf("stricter: %v (limbo expects %s)", err, tc.ExpectedResult)
+		return limboStricter
 	case err != nil && stdErr == nil:
 		t.Errorf("%v; crypto/x509 accepts (limbo expects %s)", err, tc.ExpectedResult)
 	default:

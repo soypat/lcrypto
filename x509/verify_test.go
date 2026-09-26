@@ -27,6 +27,7 @@ type chainCase struct {
 	at          time.Time         // Zero: lt.Epoch.
 	wantErr     bool              // crypto/x509's verdict, checked to keep cases meaningful.
 	unsupported bool              // crypto/x509 accepts; Verifier fails closed with ErrUnsupported.
+	stricter    bool              // crypto/x509 accepts; a stricter Verifier policy rejects.
 }
 
 // pki issues test certificates, all signed by the one that issued the previous.
@@ -87,6 +88,28 @@ func stdUsage(u lx509.ExtKeyUsage) x509.ExtKeyUsage {
 		return x509.ExtKeyUsageClientAuth
 	}
 	return x509.ExtKeyUsageServerAuth
+}
+
+// RFC 8446 6.2 alert descriptions of Verifier errors.
+const (
+	alertBadCertificate         = 42
+	alertUnsupportedCertificate = 43
+	alertCertificateExpired     = 45
+	alertIllegalParameter       = 47
+	alertUnknownCA              = 48
+	alertDecryptError           = 51
+	alertInternalError          = 80
+	alertCertificateRequired    = 116
+)
+
+// alertOf fails t unless err, returned by Verifier, carries a TLS alert.
+func alertOf(t testing.TB, err error) uint8 {
+	t.Helper()
+	a, ok := err.(interface{ Alert() uint8 })
+	if !ok {
+		t.Fatalf("%v (%T) carries no TLS alert", err, err)
+	}
+	return a.Alert()
 }
 
 // newVerifier returns a Verifier configured with roots at time at, and limits of cfg.
@@ -197,6 +220,14 @@ func TestVerifyChain(t *testing.T) {
 		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
 	})
 	noEKU := p.issue("ec", "no EKU", false, interEC, func(c *x509.Certificate) { c.ExtKeyUsage = nil })
+	kuNoSign := p.issue("ec", "KU without digitalSignature", false, interEC, func(c *x509.Certificate) {
+		c.KeyUsage = x509.KeyUsageKeyAgreement
+	})
+	kuSign := p.issue("ec", "KU with digitalSignature", false, interEC, func(c *x509.Certificate) {
+		c.KeyUsage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement
+	})
+	noKU := p.issue("ec", "no KU", false, interEC, func(c *x509.Certificate) { c.KeyUsage = 0 })
+	leaf1024 := p.issue("rsa1024", "leaf RSA-1024", false, interRSA, nil)
 	otherEKU := p.issue("ec", "other EKU", false, interEC, func(c *x509.Certificate) {
 		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning}
 	})
@@ -237,7 +268,11 @@ func TestVerifyChain(t *testing.T) {
 		{name: "RSA PKCS1", roots: certs(rootRSA), chain: certs(leafRSA, interRSA), host: "example.com"},
 		{name: "RSA PSS", roots: certs(rootPSS), chain: certs(leafPSS, interPSS), host: "example.com"},
 		{name: "mixed", roots: certs(rootRSA), chain: certs(leafMixed, interMixed), host: "example.com"},
-		{name: "1024 over 4096", roots: certs(root1024), chain: certs(leaf4096), host: "example.com"},
+		{name: "1024 over 4096", roots: certs(root1024), chain: certs(leaf4096), host: "example.com", stricter: true},
+		{name: "RSA-1024 leaf", roots: certs(rootRSA), chain: certs(leaf1024, interRSA), host: "example.com", stricter: true},
+		{name: "leaf KU without digitalSignature", roots: certs(rootEC), chain: certs(kuNoSign, interEC), host: "example.com", stricter: true},
+		{name: "leaf KU with digitalSignature", roots: certs(rootEC), chain: certs(kuSign, interEC), host: "example.com"},
+		{name: "leaf without KU", roots: certs(rootEC), chain: certs(noKU, interEC), host: "example.com"},
 		{name: "wrong root", roots: certs(rootRSA), chain: certs(leafEC, interEC), host: "example.com", wantErr: true},
 		{name: "missing intermediate", roots: certs(rootEC), chain: certs(leafEC), host: "example.com", wantErr: true},
 		{name: "self-signed leaf trusted", roots: certs(selfSigned), chain: certs(selfSigned), host: "example.com"},
@@ -319,10 +354,17 @@ func TestVerifyChain(t *testing.T) {
 			} else {
 				err = v.VerifyChain(chain, c.usage, []byte(c.host))
 			}
+			if err != nil {
+				alertOf(t, err)
+			}
 			switch {
 			case c.unsupported:
-				if !errors.Is(err, lx509.ErrUnsupported) {
+				if err != lx509.ErrUnsupported {
 					t.Fatalf("got %v, want ErrUnsupported", err)
+				}
+			case c.stricter:
+				if !lx509.Stricter(err) {
+					t.Fatalf("got %v, want a stricter policy's rejection", err)
 				}
 			case (err != nil) != (stdErr != nil):
 				t.Fatalf("got %v, crypto/x509 got %v", err, stdErr)
@@ -398,18 +440,22 @@ func TestCertificateVerifyScheme(t *testing.T) {
 		leaf       *lt.Cert
 		scheme     uint16 // Offered in CertificateVerify.
 		signScheme uint16 // Used to sign.
+		alert      uint8  // RFC 8446 alert of the error.
 	}{
-		{"RSA PKCS1", leafRSA, 0x0401, 0x0401},
-		{"RSA key as ECDSA", leafRSA, lx509.SchemeECDSAP256SHA256, 0x0804},
-		{"ECDSA key as RSA", leafEC, lx509.SchemeRSAPSSSHA256, 0x0403},
-		{"PSS hash mismatch", leafRSA, lx509.SchemeRSAPSSSHA256, 0x0805},
-		{"P-256 key as P-384", leafEC, lx509.SchemeECDSAP384SHA384, 0x0403},
-		{"P-384 key as P-256", leaf384, lx509.SchemeECDSAP256SHA256, 0x0503},
-		{"P-521", leaf521, 0x0603, 0x0603},
+		{"RSA PKCS1", leafRSA, 0x0401, 0x0401, alertIllegalParameter},
+		{"RSA key as ECDSA", leafRSA, lx509.SchemeECDSAP256SHA256, 0x0804, alertIllegalParameter},
+		{"ECDSA key as RSA", leafEC, lx509.SchemeRSAPSSSHA256, 0x0403, alertIllegalParameter},
+		{"PSS hash mismatch", leafRSA, lx509.SchemeRSAPSSSHA256, 0x0805, alertDecryptError},
+		{"P-256 key as P-384", leafEC, lx509.SchemeECDSAP384SHA384, 0x0403, alertIllegalParameter},
+		{"P-384 key as P-256", leaf384, lx509.SchemeECDSAP256SHA256, 0x0503, alertIllegalParameter},
+		{"P-521", leaf521, 0x0603, 0x0603, alertIllegalParameter},
 	} {
 		sig := lt.SignCertificateVerify(t, c.leaf.Key, c.signScheme, msg)
-		if err := v.VerifyPeer(lt.Chain{c.leaf.DER}, c.scheme, true, []byte("example.com"), msg, sig); err == nil {
+		err := v.VerifyPeer(lt.Chain{c.leaf.DER}, c.scheme, true, []byte("example.com"), msg, sig)
+		if err == nil {
 			t.Errorf("%s: accepted", c.name)
+		} else if a := alertOf(t, err); a != c.alert {
+			t.Errorf("%s: %v: alert %d, want %d", c.name, err, a, c.alert)
 		}
 	}
 }

@@ -3,7 +3,7 @@ package x509
 import (
 	"bytes"
 	"cmp"
-	"errors"
+	"math/bits"
 	"sync"
 
 	"github.com/soypat/lcrypto"
@@ -34,30 +34,8 @@ const (
 	// DefaultMaxSignatureChecks is VerifierConfig.MaxSignatureChecks when
 	// zero: crypto/x509's maxChainSignatureChecks.
 	DefaultMaxSignatureChecks = 100
-)
-
-var (
-	ErrUnknownAuthority  = errors.New("x509: certificate signed by unknown authority")
-	ErrExpired           = errors.New("x509: certificate has expired or is not yet valid")
-	ErrIncompatibleUsage = errors.New("x509: certificate specifies an incompatible key usage")
-	ErrUnsupported       = errors.New("x509: unsupported certificate chain feature")
-	ErrScheme            = errors.New("x509: signature scheme does not suit the certificate key")
-
-	errNoRoots              = errors.New("x509: Verifier has no roots")
-	errNotConfigured        = errors.New("x509: Verifier not configured")
-	errNoClock              = errors.New("x509: VerifierConfig.Nanotime required")
-	errRootParse            = errors.New("x509: root certificate does not parse")
-	errLimit                = errors.New("x509: VerifierConfig limit out of range")
-	errIndex                = errors.New("x509: certificate index out of range")
-	errNoName               = errors.New("x509: expected name required")
-	errChainLen             = errors.New("x509: peer sent no or too many certificates")
-	errUnhandledCritical    = errors.New("x509: unhandled critical extension")
-	errNotAuthorized        = errors.New("x509: certificate is not authorized to sign other certificates")
-	errTooManyIntermediates = errors.New("x509: too many intermediates for path length constraint")
-	errConstraint           = errors.New("x509: invalid signature: parent certificate cannot sign this kind of certificate")
-	errSignatureAlgorithm   = errors.New("x509: cannot verify signature: algorithm unimplemented")
-	errKeyMismatch          = errors.New("x509: signature algorithm does not match the public key")
-	errSignatureLimit       = errors.New("x509: signature check attempts limit reached while verifying certificate chain")
+	// DefaultMinRSABits is VerifierConfig.MinRSABits when zero.
+	DefaultMinRSABits = 2048
 )
 
 // Verifier implements [lcrypto.Verifier] with Go's crypto/x509 chain building
@@ -67,11 +45,12 @@ var (
 //     every certificate within its validity period.
 //   - Extended key usages are enforced down the chain as in crypto/x509.
 //   - A server must be valid for the expected name, a DNS name or IP literal.
-//   - The CertificateVerify signature must be the leaf key's under the scheme.
+//   - The CertificateVerify signature must be the leaf key's under the scheme,
+//     and the leaf's key usage, if present, must allow digital signatures.
 //
-// Certificates may carry RSA keys of 1024 to 4096 bits, ECDSA P-256 and P-384
-// keys and Ed25519 keys, and be signed with Ed25519 or with PKCS #1 v1.5, PSS
-// or ECDSA over SHA-256, SHA-384 or SHA-512.
+// Certificates may carry RSA keys of MinRSABits (by default 2048) to 4096
+// bits, ECDSA P-256 and P-384 keys and Ed25519 keys, and be signed with Ed25519
+// or with PKCS #1 v1.5, PSS or ECDSA over SHA-256, SHA-384 or SHA-512.
 // Chains through CAs with name constraints, a policy constraint requiring
 // explicit policy or a mapping of anyPolicy, and chains that need other curves,
 // are rejected with [ErrUnsupported]. There is no revocation checking.
@@ -88,6 +67,7 @@ type Verifier struct {
 	maxPeer   int
 	maxChain  int
 	maxChecks int
+	minRSA    int
 	sc        verifyScratch
 }
 
@@ -113,6 +93,10 @@ type VerifierConfig struct {
 	// On microcontrollers a peer can make each check cost up to seconds: set
 	// it near MaxChainLen, e.g. 8 to 16, as a valid chain needs one per link.
 	MaxSignatureChecks int
+	// MinRSABits is the smallest RSA modulus accepted, of the leaf and of
+	// every signing key, from rsa.MinBits to rsa.MaxBits and by default
+	// DefaultMinRSABits. crypto/x509 accepts 1024.
+	MinRSABits int
 }
 
 // Configure checks cfg and makes v verify against it. Every root is parsed
@@ -135,14 +119,15 @@ func (v *Verifier) configure(cfg VerifierConfig) error {
 	if cfg.Nanotime == nil {
 		return errNoClock
 	}
-	if cfg.MaxPeerCerts < 0 || cfg.MaxChainLen < 0 || cfg.MaxChainLen > MaxChainLen || cfg.MaxSignatureChecks < 0 {
+	if cfg.MaxPeerCerts < 0 || cfg.MaxChainLen < 0 || cfg.MaxChainLen > MaxChainLen || cfg.MaxSignatureChecks < 0 ||
+		cfg.MinRSABits != 0 && (cfg.MinRSABits < rsa.MinBits || cfg.MinRSABits > rsa.MaxBits) {
 		return errLimit
 	}
 	c := &v.sc.chain[0]
 	for i := range cfg.Roots.NumCerts() {
 		der, err := cfg.Roots.CertView(i)
 		if err != nil {
-			return err
+			return errRootParse
 		}
 		if c.Parse(der) != nil {
 			return errRootParse
@@ -153,6 +138,7 @@ func (v *Verifier) configure(cfg VerifierConfig) error {
 	v.maxPeer = cmp.Or(cfg.MaxPeerCerts, DefaultMaxPeerCerts)
 	v.maxChain = cmp.Or(cfg.MaxChainLen, MaxChainLen)
 	v.maxChecks = cmp.Or(cfg.MaxSignatureChecks, DefaultMaxSignatureChecks)
+	v.minRSA = cmp.Or(cfg.MinRSABits, DefaultMinRSABits)
 	return nil
 }
 
@@ -217,7 +203,9 @@ func (v *Verifier) verifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, n
 		return errNotConfigured
 	}
 	nPeer := chainView.NumCerts()
-	if nPeer <= 0 || nPeer > v.maxPeer {
+	if nPeer <= 0 {
+		return errNoCerts
+	} else if nPeer > v.maxPeer {
 		return errChainLen
 	}
 	ns := v.nanotime()
@@ -230,13 +218,21 @@ func (v *Verifier) verifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, n
 	leaf := &v.sc.chain[0]
 	der, err := chainView.CertView(0)
 	if err != nil {
-		return err
+		return errCertView
 	}
 	if err := leaf.Parse(der); err != nil {
 		return err
 	}
 	if err := checkValid(leaf, now, nowFrac); err != nil {
 		return err
+	}
+	// RFC 8446 4.4.2.2 and RFC 5280 4.2.1.3: the leaf key signs, so a key usage
+	// extension must allow it. crypto/x509 does not check the leaf's.
+	if leaf.KeyUsage != 0 && leaf.KeyUsage&KeyUsageDigitalSignature == 0 {
+		return errLeafKeyUsage
+	}
+	if leaf.PublicKeyAlgorithm == RSA && rsaBits(leaf.PublicKey) < v.minRSA {
+		return errWeakRSA
 	}
 	if len(name) > 0 {
 		if err := leaf.VerifyHostname(name); err != nil {
@@ -249,6 +245,14 @@ func (v *Verifier) verifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, n
 // verifyCertificateVerify checks sig is the leaf key's signature of msg as
 // crypto/tls verifyHandshakeSignature does for TLS 1.3.
 func (v *Verifier) verifyCertificateVerify(leaf *Certificate, scheme uint16, msg, sig []byte) error {
+	err := v.certificateVerify(leaf, scheme, msg, sig)
+	if err != nil && err != ErrScheme {
+		err = errCertificateVerify // The signature packages' errors map to no alert.
+	}
+	return err
+}
+
+func (v *Verifier) certificateVerify(leaf *Certificate, scheme uint16, msg, sig []byte) error {
 	sc := &v.sc
 	switch scheme {
 	case SchemeECDSAP256SHA256:
@@ -446,6 +450,14 @@ func chainUsageOK(chain []Certificate, usage ExtKeyUsage) bool {
 
 // checkSignatureFrom is crypto/x509's CheckSignatureFrom.
 func (v *Verifier) checkSignatureFrom(c, parent *Certificate) error {
+	err := v.checkSignature(c, parent)
+	if _, ours := err.(errX509); err != nil && !ours {
+		err = errCertSignature // The signature packages' errors map to no alert.
+	}
+	return err
+}
+
+func (v *Verifier) checkSignature(c, parent *Certificate) error {
 	if parent.Version == 3 && !parent.BasicConstraintsValid ||
 		parent.BasicConstraintsValid && !parent.IsCA {
 		return errConstraint
@@ -490,9 +502,23 @@ func (v *Verifier) checkSignatureFrom(c, parent *Certificate) error {
 	if parent.PublicKeyAlgorithm != RSA {
 		return errKeyMismatch
 	}
+	if rsaBits(parent.PublicKey) < v.minRSA {
+		return errWeakRSA
+	}
 	digest := sc.hash(h, c.RawTBSCertificate)
 	if pss {
 		return sc.rsa.VerifyPSS(parent.PublicKey, parent.RSAExponent, h, digest, c.Signature)
 	}
 	return sc.rsa.VerifyPKCS1v15(parent.PublicKey, parent.RSAExponent, h, digest, c.Signature)
+}
+
+// rsaBits is the bit length of big-endian modulus n.
+func rsaBits(n []byte) int {
+	for len(n) > 0 && n[0] == 0 {
+		n = n[1:]
+	}
+	if len(n) == 0 {
+		return 0
+	}
+	return 8*(len(n)-1) + bits.Len8(n[0])
 }
