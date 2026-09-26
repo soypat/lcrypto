@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
 	"io"
 	"math/big"
 	"math/bits"
@@ -107,6 +108,7 @@ func isInBounds(x *Element) bool {
 }
 
 func TestMultiplyDistributesOverAdd(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	multiplyDistributesOverAdd := func(x, y, z Element) bool {
 		// Compute t1 = (x+y)*z
 		t1 := new(Element)
@@ -156,6 +158,7 @@ func TestMul64to128(t *testing.T) {
 }
 
 func TestSetBytesRoundTrip(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	f1 := func(in [32]byte, fe Element) bool {
 		fe.SetBytes(in[:])
 
@@ -216,6 +219,7 @@ func swapEndianness(buf []byte) []byte {
 }
 
 func TestBytesBigEquivalence(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	f1 := func(in [32]byte, fe, fe1 Element) bool {
 		fe.SetBytes(in[:])
 
@@ -411,6 +415,7 @@ func TestSelectSwap(t *testing.T) {
 }
 
 func TestMult32(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	mult32EquivalentToMul := func(x Element, y uint32) bool {
 		t1 := new(Element)
 		for i := 0; i < 100; i++ {
@@ -493,6 +498,7 @@ func TestSqrtRatio(t *testing.T) {
 }
 
 func TestSquareN(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	squareNMatchesRepeatSquare := func(x Element) bool {
 		for _, n := range []int{1, 2, 5, 10, 15, 50, 120} {
 			got := new(Element).SquareN(&x, n)
@@ -518,6 +524,7 @@ func TestSquareN(t *testing.T) {
 }
 
 func TestFeMul(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	asmLikeGeneric := func(a, b Element) bool {
 		a1 := a
 		a2 := a

@@ -273,6 +273,9 @@ func (ps *pkgState) rewrite(job *fileJob) error {
 			rw.pointerTables(fd)
 			rw.stringWrites(fd)
 		}
+		if job.isTest {
+			rw.quickSkips(fd)
+		}
 	}
 	job.src, err = applyEdits(job.src, rw.edits)
 	return err
@@ -863,6 +866,31 @@ func (rw *rewriter) pointerTables(fd *ast.FuncDecl) {
 	}
 }
 
+// quickSkips makes a test function calling testing/quick's Check or CheckEqual
+// skip under TinyGo, whose reflect cannot describe the checked function.
+func (rw *rewriter) quickSkips(fd *ast.FuncDecl) {
+	params := fd.Type.Params.List
+	if !strings.HasPrefix(fd.Name.Name, "Test") || len(params) != 1 || len(params[0].Names) != 1 || len(fd.Body.List) == 0 {
+		return
+	}
+	calls := false
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "quick" && (sel.Sel.Name == "Check" || sel.Sel.Name == "CheckEqual") {
+				calls = true
+			}
+		}
+		return !calls
+	})
+	if calls {
+		t := params[0].Names[0].Name
+		rw.edits = append(rw.edits, edit{
+			start: rw.off(fd.Body.List[0].Pos()), end: rw.off(fd.Body.List[0].Pos()),
+			text: "testenv.SkipIfTinyGo(" + t + ", \"testing/quick needs reflect.Type.NumOut\")\n\t",
+		})
+	}
+}
+
 // stringWrites rewrites w.Write([]byte(s)) into a write of s's bytes in place,
 // w.Write(unsafe.Slice(unsafe.StringData(s), len(s))): TinyGo heap allocates
 // the conversion's copy. Write implementations must not modify or retain their
@@ -1118,7 +1146,7 @@ func importName(is *ast.ImportSpec, p string) string {
 // mapImport maps upstream import p. Test code, isTest, may also import the test
 // support packages and non-internal std packages.
 func (ps *pkgState) mapImport(p string, isTest bool) (string, error) {
-	if strings.HasPrefix(p, modulePath+"/"+stdDir+"/") || strings.HasPrefix(p, modulePath+"/"+kitDir+"/") {
+	if strings.HasPrefix(p, modulePath+"/"+stdDir+"/") || isTest && strings.HasPrefix(p, modulePath+"/"+kitDir+"/") {
 		return p, nil // Already mapped.
 	}
 	if dst, ok := kitImportMap[p]; ok && isTest {
@@ -1144,7 +1172,7 @@ func (ps *pkgState) mapImport(p string, isTest bool) (string, error) {
 
 func knownImport(name string) (string, bool) {
 	switch name {
-	case "unsafe", "errors", "strconv", "runtime":
+	case "unsafe", "errors", "strconv":
 		return name, true
 	case "binary":
 		return "encoding/binary", true
@@ -1154,6 +1182,11 @@ func knownImport(name string) (string, bool) {
 	for _, dst := range importMap {
 		if path.Base(dst) == name {
 			return modulePath + "/" + stdDir + "/" + dst, true
+		}
+	}
+	for _, dst := range kitImportMap { // Test support; mapImport rejects it outside tests.
+		if path.Base(dst) == name {
+			return modulePath + "/" + dst, true
 		}
 	}
 	return "", false

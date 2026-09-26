@@ -13,6 +13,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
 	"math/big"
 	"math/bits"
 	"math/rand"
@@ -73,6 +74,7 @@ func testModAddCommutative(a *Nat, b *Nat) bool {
 }
 
 func TestModAddCommutative(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	err := quick.Check(testModAddCommutative, &quick.Config{})
 	if err != nil {
 		t.Error(err)
@@ -88,6 +90,7 @@ func testModSubThenAddIdentity(a *Nat, b *Nat) bool {
 }
 
 func TestModSubThenAddIdentity(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	err := quick.Check(testModSubThenAddIdentity, &quick.Config{})
 	if err != nil {
 		t.Error(err)
@@ -95,6 +98,7 @@ func TestModSubThenAddIdentity(t *testing.T) {
 }
 
 func TestMontgomeryRoundtrip(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	err := quick.Check(func(a *Nat) bool {
 		one := natFromLimbs(make([]uint, a.nlimbs))
 		one.lim()[0] = 1
@@ -169,6 +173,7 @@ func TestModulusAndNatSizes(t *testing.T) {
 }
 
 func TestSetBytes(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	tests := []struct {
 		m, b []byte
 		fail bool

@@ -9,8 +9,8 @@ package cryptotest
 
 import (
 	"fmt"
+	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
 	"reflect"
-	"runtime"
 	"slices"
 	"testing"
 )
@@ -25,9 +25,7 @@ import (
 // ms must be a pointer to a non-nil interface.
 func NoExtraMethods(t *testing.T, ms any, allowed ...string) {
 	t.Helper()
-	if runtime.Compiler == "tinygo" {
-		t.Skip("TinyGo does not implement reflect.Type.Method")
-	}
+	testenv.SkipIfTinyGo(t, "NoExtraMethods needs reflect.Type.Method")
 	extraMethods, err := extraMethods(ms)
 	if err != nil {
 		t.Fatal(err)

@@ -8,6 +8,7 @@
 package field
 
 import (
+	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
 	"testing"
 	"testing/quick"
 )
@@ -88,6 +89,7 @@ func checkAliasingTwoArgs(f func(v, x, y *Element) *Element) func(v, x, y Elemen
 //
 // without any of the inputs getting clobbered by the output being written.
 func TestAliasing(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "testing/quick needs reflect.Type.NumOut")
 	type target struct {
 		name     string
 		oneArgF  func(v, x *Element) *Element

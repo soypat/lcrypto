@@ -635,8 +635,8 @@ func keccakF1600Words(a *[25]uint64) {`,
 			},
 			{
 				File: "methods.go", Decl: "NoExtraMethods",
-				Old:  "t.Helper()\n",
-				New:  "t.Helper()\n\tif runtime.Compiler == \"tinygo\" {\n\t\tt.Skip(\"TinyGo does not implement reflect.Type.Method\")\n\t}\n",
+				Old: "t.Helper()\n",
+				New: "t.Helper()\n\ttestenv.SkipIfTinyGo(t, \"NoExtraMethods needs reflect.Type.Method\")\n",
 			},
 			{
 				File: "allocations.go", Decl: "SkipTestAllocations",

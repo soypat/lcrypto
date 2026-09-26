@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/soypat/lcrypto/internal/lcryptotest/testenv"
 )
 
 func root(t *testing.T) string {
@@ -25,6 +27,7 @@ func root(t *testing.T) string {
 // TestUpToDate checks generation is deterministic and matches both the manifest
 // and the checked-in internal/std tree.
 func TestUpToDate(t *testing.T) {
+	testenv.SkipIfTinyGo(t, "lcryptogen type checks with the host toolchain")
 	r := root(t)
 	out, inputs, err := generate(r)
 	if err != nil {
@@ -74,6 +77,7 @@ func TestTinyGoAllocs(t *testing.T) {
 }
 
 func tinygoAllocs(t *testing.T, prog string, flags ...string) {
+	testenv.SkipIfTinyGo(t, "os/exec cannot set a working directory")
 	if testing.Short() {
 		t.Skip("slow")
 	}

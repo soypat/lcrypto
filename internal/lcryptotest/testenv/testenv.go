@@ -23,7 +23,7 @@ const SanitizersEnabled = raceEnabled || msanEnabled || asanEnabled
 func MustHaveExternalNetwork(t testing.TB) {
 	t.Helper()
 	switch {
-	case runtime.Compiler == "tinygo":
+	case TinyGo:
 		t.Skip("skipping test that needs the network: TinyGo cannot run the go command")
 	case testing.Short():
 		t.Skip("skipping test that needs the network in -short mode")
@@ -68,6 +68,14 @@ func CleanCmdEnv(cmd *exec.Cmd) *exec.Cmd {
 		}
 	}
 	return cmd
+}
+
+// SkipIfTinyGo skips t under TinyGo, saying why the test cannot run there.
+func SkipIfTinyGo(t testing.TB, why string) {
+	t.Helper()
+	if TinyGo {
+		t.Skip("skipping under TinyGo: " + why)
+	}
 }
 
 // SkipIfShortAndSlow skips t in -short mode on architectures slow to run it.
