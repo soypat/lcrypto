@@ -24,7 +24,7 @@ yes... and no. i used an llm to generate a program that parses the standard libr
 
 yes. determinism is good. the result is only as good as the rewrite program and standard library, so we'll get better with time, and likely only better. 
 
-however, not all is roses for all you purists. we are in process of defining brand new abstractions for the crypto algorithms we know and love. see [`lcrypto.go`](./lcrypto.go) for a list of interfaces.
+however, not all is roses for all you purists. we are in process of defining brand new abstractions for the crypto algorithms we know and love at lneto. see [`lcrypto.go`](./lcrypto.go) for a list of interfaces.
 
 ## oh dear, here we go...
 
@@ -51,7 +51,11 @@ what runs:
 - [Wycheproof](https://github.com/C2SP/wycheproof), [x509-limbo](https://github.com/C2SP/x509-limbo), [ed25519vectors](https://hdevalence.ca/blog/2020-10-04-its-25519am), NIST PKITS: vendored in [`internal/lcryptotest/testdata`](./internal/lcryptotest/testdata/), offline. add more via `vectorSuites` in lcryptogen's config.
 - FIPS 140-3 known-answer self-tests (CASTs) as `TestCAST` ([Go blog](https://go.dev/blog/fips140)).
 - [accumulated test vectors](https://words.filippo.io/accumulated/) for ML-KEM and cSHAKE.
-- tinygo tests exclude some of standard libraries that require `os/exec` and other features not in tinygo. list skipped tests with `tinygo test -v ./... 2>&1 | grep -- '--- SKIP'`.
+- tinygo tests exclude some of standard library tests that require `os/exec` and other features not in tinygo. list skipped tests with `tinygo test -v ./... 2>&1 | grep -- '--- SKIP'`.
+
+## x509 caveat
+
+do not use x509 for critical software- we were not able to generate it deterministically from the standard library (it is currently llm slop)
 
 # sister project: lneto
 lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto's networking https://github.com/soypat/lneto
