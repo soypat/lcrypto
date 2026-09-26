@@ -148,6 +148,12 @@ var falseConds = map[string]bool{
 var hashMarshal = []string{"Digest.MarshalBinary", "Digest.AppendBinary", "Digest.UnmarshalBinary", "Digest.Clone", "consumeUint64"}
 
 // packages is processed in order; order also fixes output determinism.
+// testInputs are directories fetch also copies for hand-written tests, in the
+// Src form of pkgSpec. They are not generator inputs.
+var testInputs = []string{
+	"go:crypto/x509/testdata", // NIST PKITS and policy certificates for x509's differential tests.
+}
+
 var packages = []pkgSpec{
 	{Src: "go:internal/byteorder", Dst: "byteorder"},
 	{

@@ -12,6 +12,7 @@ import (
 	"github.com/soypat/lcrypto/sha256"
 	"github.com/soypat/lcrypto/sha512"
 	"github.com/soypat/lcrypto/x25519"
+	"github.com/soypat/lcrypto/x509"
 )
 
 var (
@@ -25,6 +26,8 @@ var (
 	verifier         ecdsa.P256Verifier
 	rsaVerifier      rsa.Verifier
 	modulus          [256]byte
+	certVerifier     x509.Verifier
+	certs            x509.Chain
 
 	cs     [p256.ShareSize]byte
 	ss     [p256.ShareSize]byte
@@ -73,6 +76,10 @@ func main() {
 	}
 	println(rsaVerifier.VerifyPKCS1v15(modulus[:], 65537, rsa.SHA256, shared[0][:], modulus[:]) == nil,
 		rsaVerifier.VerifyPSS(modulus[:], 65537, rsa.SHA256, shared[0][:], modulus[:]) == nil)
+	// Garbage certificates: the chain is parsed and rejected.
+	certs = x509.Chain{modulus[:], modulus[:]}
+	certVerifier.Roots = &certs // A pointer: boxing the slice would allocate.
+	println(certVerifier.VerifyPeer(&certs, x509.SchemeECDSAP256SHA256, true, modulus[:8], modulus[:], modulus[:]) == nil)
 }
 
 func exchange(client, server lcrypto.Exchanger) bool {
