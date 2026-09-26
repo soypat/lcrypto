@@ -301,7 +301,10 @@ func checkValid(c *Certificate, now int64, nowFrac bool) error {
 	if c.UnhandledCriticalExtension {
 		return errUnhandledCritical
 	}
-	if now < c.NotBefore || now > c.NotAfter || now == c.NotAfter && nowFrac {
+	if now < c.NotBefore {
+		return ErrNotYetValid
+	}
+	if now > c.NotAfter || now == c.NotAfter && nowFrac {
 		return ErrExpired
 	}
 	return nil
@@ -324,7 +327,9 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 			return nil
 		}
 	}
-	nCandidates := nRoots + nPeer - 1 // Roots, then peer certificates 1 onwards.
+	// Candidates are the roots, then peer certificates 1 onwards, each pool
+	// visited once per key ID tier: sc.next counts visits up to 3*nCandidates.
+	nCandidates := nRoots + nPeer - 1
 	// hint is the first reason a candidate was rejected, as crypto/x509
 	// reports. chainErr is why a complete chain was: it takes precedence, and
 	// ErrUnsupported over ErrIncompatibleUsage since crypto/x509 may accept
@@ -334,12 +339,19 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 	depth := 0 // sc.chain[:depth+1] is the chain so far.
 	sc.next[0] = 0
 	for depth >= 0 {
-		if depth+1 == v.maxChain || sc.next[depth] >= nCandidates {
+		if depth+1 == v.maxChain || sc.next[depth] >= 3*nCandidates {
 			depth-- // Exhausted: backtrack.
 			continue
 		}
-		idx := sc.next[depth]
+		visit := sc.next[depth]
 		sc.next[depth]++
+		var idx, tier int
+		if visit < 3*nRoots {
+			tier, idx = visit/nRoots, visit%nRoots
+		} else {
+			visit -= 3 * nRoots
+			tier, idx = visit/(nPeer-1), nRoots+visit%(nPeer-1)
+		}
 		isRoot := idx < nRoots
 		var der []byte
 		var err error
@@ -351,7 +363,8 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 		child, cand := &sc.chain[depth], &sc.chain[depth+1]
 		// findPotentialParents: skip what is not the issuer or does not parse.
 		// The subject alone is read first: a full parse costs about 20 times more.
-		if err != nil || !bytes.Equal(child.RawIssuer, rawSubject(der)) || cand.Parse(der) != nil {
+		if err != nil || !bytes.Equal(child.RawIssuer, rawSubject(der)) || cand.Parse(der) != nil ||
+			keyIDTier(child, cand) != tier {
 			continue
 		}
 		checks++
@@ -401,6 +414,19 @@ func (v *Verifier) buildChain(peer lcrypto.CertChain, nPeer int, now int64, nowF
 		return hint
 	}
 	return ErrUnknownAuthority
+}
+
+// keyIDTier is the order in which crypto/x509's findPotentialParents tries
+// parent: 0 if its subject key ID is child's authority key ID, 1 if only one of
+// them is present, and 2 if they differ.
+func keyIDTier(child, parent *Certificate) int {
+	switch {
+	case bytes.Equal(parent.SubjectKeyId, child.AuthorityKeyId):
+		return 0
+	case len(parent.SubjectKeyId) == 0 || len(child.AuthorityKeyId) == 0:
+		return 1
+	}
+	return 2
 }
 
 // alreadyInChain is crypto/x509's: equal subject, public key and SAN.

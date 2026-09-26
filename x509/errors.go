@@ -11,7 +11,8 @@ const (
 	_ errX509 = iota // x509: unknown error
 	// Exported: verification failures callers tell apart.
 	ErrUnknownAuthority  // x509: certificate signed by unknown authority
-	ErrExpired           // x509: certificate has expired or is not yet valid
+	ErrExpired           // x509: certificate has expired
+	ErrNotYetValid       // x509: certificate is not yet valid
 	ErrIncompatibleUsage // x509: certificate specifies an incompatible key usage
 	ErrUnsupported       // x509: unsupported certificate chain feature
 	ErrScheme            // x509: signature scheme does not suit the certificate key
@@ -72,6 +73,11 @@ const (
 	errDuplicateExtension    // x509: certificate contains duplicate extension
 	errMalformedSignature    // x509: malformed signature
 	errTrailingData          // x509: trailing data
+	errExtraData             // x509: data after an ASN.1 value
+	errEmptyRDN              // x509: empty relative distinguished name
+	errEmptyIssuer           // x509: empty issuer
+	errEmptySubject          // x509: empty subject without a critical subject alternative name, or of a CA
+	errEmptyEKU              // x509: empty extended key usage
 	errInvalidRDN            // x509: invalid RDNSequence
 	errRSAParams             // x509: RSA key missing NULL parameters
 	errRSAKey                // x509: invalid RSA public key
@@ -111,7 +117,7 @@ func (err errX509) Alert() uint8 {
 	switch err {
 	case ErrUnknownAuthority:
 		return 48 // unknown_ca
-	case ErrExpired:
+	case ErrExpired, ErrNotYetValid:
 		return 45 // certificate_expired
 	case ErrUnsupported:
 		return 43 // unsupported_certificate

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lcrypto"
 	lt "github.com/soypat/lcrypto/internal/lcryptotest"
 	"github.com/soypat/lcrypto/internal/lcryptotest/cryptotest"
 	"github.com/soypat/lcrypto/internal/lcryptotest/x509limbo"
@@ -100,32 +101,48 @@ func runLimbo(t *testing.T, tc x509limbo.Testcase, maxPeer int) limboResult {
 	// Like crypto/x509's CertPool, trust the roots that parse: Configure
 	// rejects the others.
 	var parsed lt.Chain
+	var rootErr error
 	for _, der := range roots {
 		var c lx509.Certificate
-		if c.Parse(der) == nil {
+		if err := c.Parse(der); err == nil {
 			parsed = append(parsed, der)
+		} else if rootErr == nil {
+			rootErr = err
 		}
 	}
 	if len(parsed) == 0 {
-		if stdErr == nil {
-			t.Errorf("no root parses; crypto/x509 accepts (limbo expects %s)", tc.ExpectedResult)
-			return limboFailed
+		switch {
+		case stdErr != nil:
+			return limboAgree
+		case lx509.Stricter(rootErr):
+			t.Logf("stricter: root: %v (limbo expects %s)", rootErr, tc.ExpectedResult)
+			return limboStricter
 		}
-		return limboAgree
+		t.Errorf("no root parses: %v; crypto/x509 accepts (limbo expects %s)", rootErr, tc.ExpectedResult)
+		return limboFailed
 	}
 	v := newVerifier(t, parsed, at, lx509.VerifierConfig{MaxPeerCerts: maxPeer})
-	var err error
-	if len(names) == 0 {
-		err = v.VerifyChainAnyName(chain, usage)
+	var chainView lcrypto.CertChain = chain // Box once: conversion allocates.
+	nameViews := make([][]byte, len(names))
+	for i, name := range names {
+		nameViews[i] = []byte(name)
 	}
-	for _, name := range names {
-		if err = v.VerifyChain(chain, usage, []byte(name)); err != nil {
-			break
+	verify := func() error {
+		if len(nameViews) == 0 {
+			return v.VerifyChainAnyName(chainView, usage)
 		}
+		for _, name := range nameViews {
+			if err := v.VerifyChain(chainView, usage, name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
+	err := verify()
 	if err != nil {
 		alertOf(t, err)
 	}
+	noAllocs(t, verify)
 	switch {
 	case err == nil && stdErr != nil:
 		t.Errorf("accepted; crypto/x509: %v (limbo expects %s)", stdErr, tc.ExpectedResult)

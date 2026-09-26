@@ -6,8 +6,12 @@
 // does not check URI names parse as URLs, the contents of name constraints (any
 // name constraints make a CA unusable to [Verifier] instead), that elliptic curve
 // points are on their curve (a Verifier checks P-256 points when it uses them),
-// and it rejects signatures and keys with unused BIT STRING bits and certificates
-// with more than 64 extensions.
+// and it rejects signatures and keys with unused BIT STRING bits, certificates
+// with more than 64 extensions, empty relative distinguished names, and data
+// after any value it reads, so that no two parsers read one signed certificate
+// differently. It also enforces RFC 5280 where crypto/x509 does not: no empty
+// issuer, no empty subject for a CA or without a critical subject alternative
+// name, and no empty extended key usage, which would otherwise allow any usage.
 //
 // [Verifier] implements [lcrypto.Verifier] after crypto/x509's Verify and
 // crypto/tls's TLS 1.3 CertificateVerify check.

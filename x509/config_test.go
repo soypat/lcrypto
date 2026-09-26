@@ -82,6 +82,34 @@ func TestVerifierLimits(t *testing.T) {
 	}
 }
 
+// TestKeyIDOrder checks that chain building tries first the parents whose
+// subject key ID matches the authority key ID, as crypto/x509 does: a decoy
+// with the same subject but another key costs no signature check.
+func TestKeyIDOrder(t *testing.T) {
+	p := &pki{t: t}
+	decoyRoot := p.issue("ec", "root", true, nil, nil)
+	root := p.issue("ec", "root", true, nil, nil)
+	decoyInter := p.issue("ec", "inter", true, root, nil)
+	inter := p.issue("ec", "inter", true, root, nil)
+	leafOfRoot := p.issue("ec", "leaf", false, root, nil)
+	leaf := p.issue("ec", "leaf", false, inter, nil)
+	for _, tc := range []struct {
+		name   string
+		roots  lt.Chain
+		chain  lt.Chain
+		checks int // Signature checks a valid chain needs.
+	}{
+		{"root", lt.Chain{decoyRoot.DER, root.DER}, lt.Chain{leafOfRoot.DER}, 1},
+		{"intermediate", lt.Chain{root.DER}, lt.Chain{leaf.DER, decoyInter.DER, inter.DER}, 2},
+		{"both", lt.Chain{decoyRoot.DER, root.DER}, lt.Chain{leaf.DER, decoyInter.DER, inter.DER}, 2},
+	} {
+		v := newVerifier(t, tc.roots, lt.Epoch, lx509.VerifierConfig{MaxSignatureChecks: tc.checks})
+		if err := v.VerifyChainAnyName(tc.chain, lx509.ExtKeyUsageAny); err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}
+
 // TestConcurrentConfigure runs Configure against the other methods, for the
 // race detector.
 func TestConcurrentConfigure(t *testing.T) {
@@ -152,6 +180,7 @@ func TestAlerts(t *testing.T) {
 	other := p.issue("ec", "other root", true, nil, nil)
 	leaf := p.issue("ec", "leaf", false, root, nil)
 	expired := p.issue("ec", "expired", false, root, func(c *x509.Certificate) { c.NotAfter = lt.Epoch.Add(-time.Second) })
+	early := p.issue("ec", "early", false, root, func(c *x509.Certificate) { c.NotBefore = lt.Epoch.Add(time.Second) })
 	v := newVerifier(t, lt.Chain{root.DER}, lt.Epoch, lx509.VerifierConfig{})
 	msg := lt.CertificateVerifyMsg(true, make([]byte, 32))
 	sig := lt.SignCertificateVerify(t, leaf.Key, lx509.SchemeECDSAP256SHA256, msg)
@@ -159,19 +188,24 @@ func TestAlerts(t *testing.T) {
 		name  string
 		err   error
 		alert uint8
+		want  error // If not nil, the error.
 	}{
-		{"unknown authority", v.VerifyChain(lt.Chain{p.issue("ec", "stranger", false, other, nil).DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertUnknownCA},
-		{"expired", v.VerifyChain(lt.Chain{expired.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateExpired},
-		{"wrong name", v.VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.org")), alertBadCertificate},
-		{"garbage", v.VerifyChain(lt.Chain{[]byte{0x30, 0}}, lx509.ExtKeyUsageAny, []byte("example.com")), alertBadCertificate},
-		{"no certificates", v.VerifyChain(lt.Chain{}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateRequired},
-		{"bad CertificateVerify", v.VerifyPeer(lt.Chain{leaf.DER}, lx509.SchemeECDSAP256SHA256, true, []byte("example.com"), msg[1:], sig), alertDecryptError},
-		{"unconfigured", new(lx509.Verifier).VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertInternalError},
+		{"unknown authority", v.VerifyChain(lt.Chain{p.issue("ec", "stranger", false, other, nil).DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertUnknownCA, lx509.ErrUnknownAuthority},
+		{"expired", v.VerifyChain(lt.Chain{expired.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateExpired, lx509.ErrExpired},
+		{"not yet valid", v.VerifyChain(lt.Chain{early.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateExpired, lx509.ErrNotYetValid},
+		{"wrong name", v.VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.org")), alertBadCertificate, lx509.ErrHostname},
+		{"garbage", v.VerifyChain(lt.Chain{[]byte{0x30, 0}}, lx509.ExtKeyUsageAny, []byte("example.com")), alertBadCertificate, nil},
+		{"no certificates", v.VerifyChain(lt.Chain{}, lx509.ExtKeyUsageAny, []byte("example.com")), alertCertificateRequired, nil},
+		{"bad CertificateVerify", v.VerifyPeer(lt.Chain{leaf.DER}, lx509.SchemeECDSAP256SHA256, true, []byte("example.com"), msg[1:], sig), alertDecryptError, nil},
+		{"unconfigured", new(lx509.Verifier).VerifyChain(lt.Chain{leaf.DER}, lx509.ExtKeyUsageAny, []byte("example.com")), alertInternalError, nil},
 	} {
 		if tc.err == nil {
 			t.Errorf("%s: accepted", tc.name)
 		} else if a := alertOf(t, tc.err); a != tc.alert {
 			t.Errorf("%s: %v: alert %d, want %d", tc.name, tc.err, a, tc.alert)
+		}
+		if tc.want != nil && tc.err != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, tc.err, tc.want)
 		}
 	}
 	if alertOf(t, lx509.ErrUnsupported) != alertUnsupportedCertificate {

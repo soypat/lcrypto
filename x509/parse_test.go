@@ -181,7 +181,7 @@ func compareParse(der []byte) string {
 		return ""
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "BIT STRING not byte aligned") || strings.Contains(err.Error(), "too many extensions") {
+		if lx509.Stricter(err) {
 			return ""
 		}
 		return "rejected: " + err.Error()
@@ -283,4 +283,214 @@ func sigAlgOf(a x509.SignatureAlgorithm) lx509.SignatureAlgorithm {
 		return lx509.ECDSAWithSHA512
 	}
 	return lx509.UnknownSignatureAlgorithm
+}
+
+// TestParseExtraData appends to one DER element of a certificate at a time:
+// Parse rejects data after the value it reads, where crypto/x509 may ignore it.
+func TestParseExtraData(t *testing.T) {
+	p := &pki{t: t}
+	root := p.issue("ec", "root", true, nil, nil)
+	oidOf := func(id ...int) asn1.ObjectIdentifier { return append(asn1.ObjectIdentifier{2, 5, 29}, id...) }
+	ext := func(oid asn1.ObjectIdentifier, v any) pkix.Extension {
+		b, err := asn1.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkix.Extension{Id: oid, Value: b}
+	}
+	type mapping struct{ Issuer, Subject asn1.ObjectIdentifier }
+	type constraints struct {
+		Require int `asn1:"optional,tag:0"`
+	}
+	ca := p.issue("ec", "ca", true, root, func(c *x509.Certificate) {
+		c.MaxPathLen = 1
+		c.DNSNames = []string{"example.com"}
+		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+		c.CRLDistributionPoints = []string{"http://example.com/crl"}
+		c.OCSPServer = []string{"http://example.com/ocsp"}
+		policy, err := x509.OIDFromInts([]uint64{2, 23, 140, 1, 2, 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Policies = []x509.OID{policy}
+		c.ExtraExtensions = []pkix.Extension{
+			ext(oidOf(33), []mapping{{asn1.ObjectIdentifier{1, 2, 3}, asn1.ObjectIdentifier{1, 2, 4}}}),
+			ext(oidOf(36), constraints{Require: 1}),
+			ext(oidOf(54), 0),
+		}
+	}).DER
+	std, err := x509.ParseCertificate(ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extPath := func(oid asn1.ObjectIdentifier, inner ...int) []int {
+		for i, e := range std.Extensions {
+			if e.Id.Equal(oid) {
+				return append([]int{0, 7, 0, i, 1 + btoi(e.Critical)}, inner...)
+			}
+		}
+		t.Fatalf("no extension %v", oid)
+		return nil
+	}
+	null := []byte{0x05, 0x00}
+	for _, tc := range []struct {
+		name  string
+		paths [][]int // Child indices from the Certificate SEQUENCE down.
+		extra []byte
+		want  error
+	}{
+		{"certificate", [][]int{{}}, null, lx509.ErrExtraData},
+		{"tbsCertificate", [][]int{{0}}, null, lx509.ErrExtraData},
+		{"signature algorithm", [][]int{{0, 2}, {1}}, []byte{0x05, 0x00, 0x05, 0x00}, lx509.ErrExtraData}, // One NULL is parameters.
+		{"validity", [][]int{{0, 4}}, null, lx509.ErrExtraData},
+		{"attribute", [][]int{{0, 5, 0, 0}}, null, lx509.ErrExtraData},
+		{"empty RDN", [][]int{{0, 5}}, []byte{0x31, 0x00}, lx509.ErrEmptyRDN},
+		{"subjectPublicKeyInfo", [][]int{{0, 6}}, null, lx509.ErrExtraData},
+		{"public key algorithm", [][]int{{0, 6, 0}}, null, lx509.ErrExtraData},
+		{"extension", [][]int{extPath(oidOf(15))[:4]}, null, lx509.ErrExtraData},
+		{"key usage", [][]int{extPath(oidOf(15))}, null, lx509.ErrExtraData},
+		{"basic constraints", [][]int{extPath(oidOf(19))}, null, lx509.ErrExtraData},
+		{"basic constraints SEQUENCE", [][]int{extPath(oidOf(19), 0)}, null, lx509.ErrExtraData},
+		{"subject alternative name", [][]int{extPath(oidOf(17))}, null, lx509.ErrExtraData},
+		{"extended key usage", [][]int{extPath(oidOf(37))}, null, lx509.ErrExtraData},
+		{"subject key identifier", [][]int{extPath(oidOf(14))}, null, lx509.ErrExtraData},
+		{"authority key identifier", [][]int{extPath(oidOf(35))}, null, lx509.ErrExtraData},
+		{"CRL distribution points", [][]int{extPath(oidOf(31))}, null, lx509.ErrExtraData},
+		{"certificate policies", [][]int{extPath(oidOf(32))}, null, lx509.ErrExtraData},
+		{"policy mappings", [][]int{extPath(oidOf(33))}, null, lx509.ErrExtraData},
+		{"policy mapping", [][]int{extPath(oidOf(33), 0, 0)}, null, lx509.ErrExtraData},
+		{"policy constraints", [][]int{extPath(oidOf(36))}, null, lx509.ErrExtraData},
+		{"policy constraints SEQUENCE", [][]int{extPath(oidOf(36), 0)}, null, lx509.ErrExtraData},
+		{"inhibit anyPolicy", [][]int{extPath(oidOf(54))}, null, lx509.ErrExtraData},
+		{"authority information access", [][]int{extPath(asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 1, 1})}, null, lx509.ErrExtraData},
+	} {
+		der := ca
+		for _, path := range tc.paths {
+			der = extendDER(t, der, path, tc.extra)
+		}
+		var c lx509.Certificate
+		if err := c.Parse(der); err != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
+		}
+		if diff := compareParse(der); diff != "" {
+			t.Errorf("%s: %s", tc.name, diff)
+		}
+	}
+	var c lx509.Certificate
+	if err := c.Parse(ca); err != nil {
+		t.Fatal("unmodified:", err)
+	}
+}
+
+// TestParseEmpty checks RFC 5280's rules on empty names and extended key usage.
+func TestParseEmpty(t *testing.T) {
+	p := &pki{t: t}
+	root := p.issue("ec", "root", true, nil, nil)
+	sanDNS, err := asn1.Marshal([]asn1.RawValue{{Class: asn1.ClassContextSpecific, Tag: 2, Bytes: []byte("example.com")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptySubject := func(c *x509.Certificate) { c.Subject = pkix.Name{} }
+	for _, tc := range []struct {
+		name   string
+		parent *lt.Cert
+		isCA   bool
+		edit   func(*x509.Certificate)
+		want   error
+	}{
+		{"subject, critical SAN", root, false, emptySubject, nil},
+		{"subject, no SAN", root, false, func(c *x509.Certificate) { emptySubject(c); c.DNSNames, c.IPAddresses = nil, nil }, lx509.ErrEmptySubject},
+		{"subject, non-critical SAN", root, false, func(c *x509.Certificate) {
+			emptySubject(c)
+			c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Value: sanDNS}}
+		}, lx509.ErrEmptySubject},
+		{"CA subject, critical SAN", root, true, func(c *x509.Certificate) { emptySubject(c); c.DNSNames = []string{"example.com"} }, lx509.ErrEmptySubject},
+		{"issuer", nil, true, func(c *x509.Certificate) { emptySubject(c); c.DNSNames = []string{"example.com"} }, lx509.ErrEmptyIssuer},
+		{"extended key usage", root, false, func(c *x509.Certificate) {
+			c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 37}, Value: []byte{0x30, 0x00}}}
+		}, lx509.ErrEmptyEKU},
+	} {
+		der := p.issue("ec", tc.name, tc.isCA, tc.parent, tc.edit).DER
+		var c lx509.Certificate
+		if err := c.Parse(der); err != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
+		}
+		if diff := compareParse(der); diff != "" {
+			t.Errorf("%s: %s", tc.name, diff)
+		}
+	}
+}
+
+// TestParseCriticalSAN checks that a critical subject alternative name with
+// no DNS name, IP address, email address or URI is unhandled, as crypto/x509
+// reports it.
+func TestParseCriticalSAN(t *testing.T) {
+	p := &pki{t: t}
+	dirName, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true,
+		Bytes: []byte{0x30, 0x00}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	san, err := asn1.Marshal(asn1.RawValue{Tag: asn1.TagSequence, IsCompound: true, Bytes: dirName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, critical := range []bool{false, true} {
+		der := p.issue("ec", "leaf", false, nil, func(c *x509.Certificate) {
+			c.DNSNames, c.IPAddresses = nil, nil
+			c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 17}, Critical: critical, Value: san}}
+		}).DER
+		var c lx509.Certificate
+		if err := c.Parse(der); err != nil {
+			t.Fatal(err)
+		}
+		if c.UnhandledCriticalExtension != critical {
+			t.Errorf("critical %v: UnhandledCriticalExtension = %v", critical, c.UnhandledCriticalExtension)
+		}
+		if diff := compareParse(der); diff != "" {
+			t.Errorf("critical %v: %s", critical, diff)
+		}
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// extendDER returns der with extra appended to the contents of the element at
+// path, child indices from der's outer element down.
+func extendDER(t *testing.T, der []byte, path []int, extra []byte) []byte {
+	t.Helper()
+	var v asn1.RawValue
+	if rest, err := asn1.Unmarshal(der, &v); err != nil || len(rest) > 0 {
+		t.Fatalf("path %v: %v", path, err)
+	}
+	if len(path) == 0 {
+		v.Bytes = append(v.Bytes[:len(v.Bytes):len(v.Bytes)], extra...)
+	} else {
+		var out []byte
+		rest := v.Bytes
+		for i := 0; len(rest) > 0; i++ {
+			var child asn1.RawValue
+			var err error
+			if rest, err = asn1.Unmarshal(rest, &child); err != nil {
+				t.Fatalf("path %v: %v", path, err)
+			}
+			b := child.FullBytes
+			if i == path[0] {
+				b = extendDER(t, b, path[1:], extra)
+			}
+			out = append(out, b...)
+		}
+		v.Bytes = out
+	}
+	v.FullBytes = nil
+	b, err := asn1.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

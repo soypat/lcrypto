@@ -123,6 +123,18 @@ func newVerifier(t testing.TB, roots lcrypto.CertChain, at time.Time, cfg lx509.
 	return v
 }
 
+// noAllocs fails t if verify allocates, whether it accepts or rejects. It is
+// skipped with -short: it runs verify twice more.
+func noAllocs(t *testing.T, verify func() error) {
+	t.Helper()
+	if testing.Short() {
+		return
+	}
+	if allocs := testing.AllocsPerRun(1, func() { verify() }); allocs != 0 {
+		t.Errorf("verification allocated %v times per run", allocs)
+	}
+}
+
 func stdVerify(roots, chain lt.Chain, host string, usage x509.ExtKeyUsage, at time.Time) error {
 	opts := x509.VerifyOptions{
 		DNSName:       host,
@@ -348,15 +360,19 @@ func TestVerifyChain(t *testing.T) {
 				t.Fatalf("crypto/x509 disagrees with the case: %v", stdErr)
 			}
 			v := newVerifier(t, roots, c.at, lx509.VerifierConfig{})
-			var err error
-			if c.host == "" {
-				err = v.VerifyChainAnyName(chain, c.usage)
-			} else {
-				err = v.VerifyChain(chain, c.usage, []byte(c.host))
+			var chainView lcrypto.CertChain = chain // Box once: conversion allocates.
+			name := []byte(c.host)
+			verify := func() error {
+				if c.host == "" {
+					return v.VerifyChainAnyName(chainView, c.usage)
+				}
+				return v.VerifyChain(chainView, c.usage, name)
 			}
+			err := verify()
 			if err != nil {
 				alertOf(t, err)
 			}
+			noAllocs(t, verify)
 			switch {
 			case c.unsupported:
 				if err != lx509.ErrUnsupported {

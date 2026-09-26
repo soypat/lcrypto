@@ -94,7 +94,7 @@ type Certificate struct {
 	SignatureAlgorithm SignatureAlgorithm
 	PublicKeyAlgorithm PublicKeyAlgorithm
 	KeyUsage           KeyUsage
-	ExtKeyUsage        ExtKeyUsage // Zero if absent or empty.
+	ExtKeyUsage        ExtKeyUsage // Zero if absent.
 
 	BasicConstraintsValid bool
 	IsCA                  bool
@@ -136,6 +136,7 @@ var (
 	oidSHA384            = []byte{0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02}
 	oidSHA512            = []byte{0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03}
 	oidAIA               = []byte{0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01}
+	oidSAN               = []byte{0x55, 0x1d, 0x11}
 	oidEKUServerAuth     = []byte{0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01}
 	oidEKUClientAuth     = []byte{0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02}
 	oidEKUAny            = []byte{0x55, 0x1d, 0x25, 0x00}
@@ -234,6 +235,9 @@ func (c *Certificate) parse(der []byte) error {
 	if err := validateName(issuer); err != nil {
 		return err
 	}
+	if isEmptyName(issuer) {
+		return errEmptyIssuer // RFC 5280 4.1.2.4.
+	}
 
 	var validity cryptobyte.String
 	if !tbs.ReadASN1(&validity, asn1.SEQUENCE) {
@@ -241,6 +245,9 @@ func (c *Certificate) parse(der []byte) error {
 	}
 	if !readASN1Time(&validity, &c.NotBefore) || !readASN1Time(&validity, &c.NotAfter) {
 		return errMalformedTime
+	}
+	if !validity.Empty() {
+		return errExtraData
 	}
 
 	var subject cryptobyte.String
@@ -273,10 +280,14 @@ func (c *Certificate) parse(der []byte) error {
 	if !spki.ReadASN1BitStringBytes(&spk, &padding) {
 		return errMalformedSPK
 	}
+	if !spki.Empty() {
+		return errExtraData
+	}
 	if err := c.parsePublicKey(pkOID, pkParams, spk, padding); err != nil {
 		return err
 	}
 
+	var sanCritical bool
 	if c.Version > 1 {
 		if !tbs.SkipOptionalASN1(asn1.Tag(1).ContextSpecific()) ||
 			!tbs.SkipOptionalASN1(asn1.Tag(2).ContextSpecific()) {
@@ -289,11 +300,17 @@ func (c *Certificate) parse(der []byte) error {
 				return errMalformedExtensions
 			}
 			if present {
-				if err := c.parseExtensions(extensions); err != nil {
+				if sanCritical, err = c.parseExtensions(extensions); err != nil {
 					return err
 				}
 			}
 		}
+	}
+	if !tbs.Empty() {
+		return errExtraData // Includes extensions in a version 1 or 2 certificate.
+	}
+	if isEmptyName(c.RawSubject) && (c.IsCA || !sanCritical) {
+		return errEmptySubject // RFC 5280 4.1.2.6.
 	}
 
 	if !input.ReadASN1BitStringBytes(&c.Signature, &padding) {
@@ -302,6 +319,9 @@ func (c *Certificate) parse(der []byte) error {
 	if padding != 0 {
 		// Go right-aligns such a signature; no valid signature needs it.
 		return errUnsupportedSigPadding
+	}
+	if !input.Empty() {
+		return errExtraData // Unsigned: a certificate would have many encodings.
 	}
 	return nil
 }
@@ -323,6 +343,9 @@ func parseAI(der cryptobyte.String) (oid, params []byte, err error) {
 	var tag asn1.Tag
 	if !der.ReadAnyASN1Element(&p, &tag) {
 		return nil, nil, errMalformedParams
+	}
+	if !der.Empty() {
+		return nil, nil, errExtraData
 	}
 	return oid, p, nil
 }
@@ -414,6 +437,9 @@ func validateName(raw cryptobyte.String) error {
 		if !raw.ReadASN1(&set, asn1.SET) {
 			return errInvalidRDN
 		}
+		if set.Empty() {
+			return errEmptyRDN // RDN ::= SET SIZE (1..MAX).
+		}
 		for !set.Empty() {
 			var atav cryptobyte.String
 			var oid []byte
@@ -421,6 +447,9 @@ func validateName(raw cryptobyte.String) error {
 				!atav.ReadASN1ObjectIdentifierBytes(&oid) ||
 				!validASN1Any(&atav) {
 				return errInvalidRDN
+			}
+			if !atav.Empty() {
+				return errExtraData
 			}
 		}
 	}
@@ -586,26 +615,33 @@ func (c *Certificate) parsePublicKey(oid, params, data []byte, padding uint8) er
 
 func isZero(b []byte) bool { return len(b) == 1 && b[0] == 0 }
 
-func (c *Certificate) parseExtensions(exts cryptobyte.String) error {
+// isEmptyName reports whether the validated Name name has no RDNs.
+func isEmptyName(name []byte) bool { return len(name) == 2 }
+
+// parseExtensions also reports whether the subject alternative name is critical.
+func (c *Certificate) parseExtensions(exts cryptobyte.String) (sanCritical bool, err error) {
 	if !exts.ReadASN1(&exts, asn1.SEQUENCE) {
-		return errMalformedExtensions
+		return false, errMalformedExtensions
 	}
 	all := exts
 	for n := 0; !exts.Empty(); n++ {
 		if n == maxExtensions {
-			return errTooManyExtensions
+			return false, errTooManyExtensions
 		}
 		var ext cryptobyte.String
 		var oid []byte
 		var critical bool
 		var value cryptobyte.String
 		if !exts.ReadASN1(&ext, asn1.SEQUENCE) {
-			return errMalformedExtension
+			return false, errMalformedExtension
 		}
 		if !ext.ReadASN1ObjectIdentifierBytes(&oid) ||
 			ext.PeekASN1Tag(asn1.BOOLEAN) && !ext.ReadASN1Boolean(&critical) ||
 			!ext.ReadASN1(&value, asn1.OCTET_STRING) {
-			return errMalformedExtension
+			return false, errMalformedExtension
+		}
+		if !ext.Empty() {
+			return false, errExtraData
 		}
 		// Duplicates: compare with the OIDs of the extensions before this one.
 		prev := all
@@ -615,18 +651,19 @@ func (c *Certificate) parseExtensions(exts cryptobyte.String) error {
 			prev.ReadASN1(&e, asn1.SEQUENCE)
 			e.ReadASN1ObjectIdentifierBytes(&o)
 			if bytes.Equal(o, oid) {
-				return errDuplicateExtension
+				return false, errDuplicateExtension
 			}
 		}
 		unhandled, err := c.processExtension(oid, critical, value)
 		if err != nil {
-			return err
+			return false, err
 		}
+		sanCritical = sanCritical || critical && bytes.Equal(oid, oidSAN)
 		if critical && unhandled {
 			c.UnhandledCriticalExtension = true
 		}
 	}
-	return nil
+	return sanCritical, nil
 }
 
 // processExtension is processExtensions for one extension.
@@ -638,21 +675,25 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 		if critical {
 			return false, errMarkedCritical
 		}
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		var seq cryptobyte.String
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errAIA
 		}
-		for !val.Empty() {
+		for !seq.Empty() {
 			var aia cryptobyte.String
 			var method []byte
-			if !val.ReadASN1(&aia, asn1.SEQUENCE) || !aia.ReadASN1ObjectIdentifierBytes(&method) {
+			if !seq.ReadASN1(&aia, asn1.SEQUENCE) || !aia.ReadASN1ObjectIdentifierBytes(&method) {
 				return false, errAIA
 			}
 			if aia.PeekASN1Tag(asn1.Tag(6).ContextSpecific()) && !aia.ReadASN1(&aia, asn1.Tag(6).ContextSpecific()) {
 				return false, errAIA
 			}
 		}
-		return false, nil
+		return false, emptyOrExtra(val)
 	}
+
+	// Each case reads the extension's value from val: what it leaves is extra.
+	var seq cryptobyte.String
 
 	switch oid[2] {
 	case 15: // Key usage.
@@ -671,38 +712,44 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 	case 19: // Basic constraints.
 		c.MaxPathLen = -1
 		var mpl uint
-		if !val.ReadASN1(&val, asn1.SEQUENCE) ||
-			val.PeekASN1Tag(asn1.BOOLEAN) && !val.ReadASN1Boolean(&c.IsCA) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) ||
+			seq.PeekASN1Tag(asn1.BOOLEAN) && !seq.ReadASN1Boolean(&c.IsCA) {
 			return false, errBasicConstraints
 		}
-		if val.PeekASN1Tag(asn1.INTEGER) {
-			if !val.ReadASN1Uint(&mpl) || int(mpl) < 0 {
+		if seq.PeekASN1Tag(asn1.INTEGER) {
+			if !seq.ReadASN1Uint(&mpl) || int(mpl) < 0 {
 				return false, errBasicConstraints
 			}
 			c.MaxPathLen = int(mpl)
 		}
+		if !seq.Empty() {
+			return false, errExtraData
+		}
 		c.BasicConstraintsValid = true
 
 	case 17: // Subject alternative name.
-		names, err := validateSAN(val)
+		if !val.ReadASN1Element(&seq, asn1.SEQUENCE) {
+			return false, errSAN
+		}
+		names, err := validateSAN(seq)
 		if err != nil {
 			return false, err
 		}
-		c.SubjectAltName = val
+		c.SubjectAltName = seq
 		unhandled = names == 0
 
 	case 30: // Name constraints; see Certificate.NameConstraints.
 		c.NameConstraints = true
-		return nameConstraintsUnhandled(val)
+		return nameConstraintsUnhandled(val) // Checks for extra data.
 
 	case 31: // CRL distribution points.
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errCRLDP
 		}
-		for !val.Empty() {
+		for !seq.Empty() {
 			var dp, name cryptobyte.String
 			var present bool
-			if !val.ReadASN1(&dp, asn1.SEQUENCE) ||
+			if !seq.ReadASN1(&dp, asn1.SEQUENCE) ||
 				!dp.ReadOptionalASN1(&name, &present, asn1.Tag(0).Constructed().ContextSpecific()) {
 				return false, errCRLDP
 			}
@@ -737,28 +784,34 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 
 	case 36: // Policy constraints.
 		var v int64
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errPolicyConstraints
 		}
-		if val.PeekASN1Tag(asn1.Tag(0).ContextSpecific()) {
-			if !val.ReadASN1Int64WithTag(&v, asn1.Tag(0).ContextSpecific()) || int64(int(v)) != v {
+		if seq.PeekASN1Tag(asn1.Tag(0).ContextSpecific()) {
+			if !seq.ReadASN1Int64WithTag(&v, asn1.Tag(0).ContextSpecific()) || int64(int(v)) != v {
 				return false, errPolicyConstraints
 			}
 			c.RequireExplicitPolicy = true
 		}
-		if val.PeekASN1Tag(asn1.Tag(1).ContextSpecific()) {
-			if !val.ReadASN1Int64WithTag(&v, asn1.Tag(1).ContextSpecific()) || int64(int(v)) != v {
+		if seq.PeekASN1Tag(asn1.Tag(1).ContextSpecific()) {
+			if !seq.ReadASN1Int64WithTag(&v, asn1.Tag(1).ContextSpecific()) || int64(int(v)) != v {
 				return false, errPolicyConstraints
 			}
 		}
+		if !seq.Empty() {
+			return false, errExtraData
+		}
 
 	case 37: // Extended key usage.
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errEKU
 		}
-		for !val.Empty() {
+		if seq.Empty() {
+			return false, errEmptyEKU // RFC 5280 4.2.1.12: SIZE (1..MAX).
+		}
+		for !seq.Empty() {
 			var eku []byte
-			if !val.ReadASN1ObjectIdentifierBytes(&eku) {
+			if !seq.ReadASN1ObjectIdentifierBytes(&eku) {
 				return false, errEKU
 			}
 			switch {
@@ -784,13 +837,13 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 		c.SubjectKeyId = skid
 
 	case 32: // Certificate policies: well formed, no duplicates.
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errPolicies
 		}
-		all := val
-		for n := 0; !val.Empty(); n++ {
+		all := seq
+		for n := 0; !seq.Empty(); n++ {
 			var cp, oid cryptobyte.String
-			if !val.ReadASN1(&cp, asn1.SEQUENCE) || !cp.ReadASN1(&oid, asn1.OBJECT_IDENTIFIER) || !validOID(oid) {
+			if !seq.ReadASN1(&cp, asn1.SEQUENCE) || !cp.ReadASN1(&oid, asn1.OBJECT_IDENTIFIER) || !validOID(oid) {
 				return false, errPolicies
 			}
 			prev := all
@@ -805,15 +858,18 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 		}
 
 	case 33: // Policy mappings.
-		if !val.ReadASN1(&val, asn1.SEQUENCE) {
+		if !val.ReadASN1(&seq, asn1.SEQUENCE) {
 			return false, errPolicyMappings
 		}
-		for !val.Empty() {
+		for !seq.Empty() {
 			var s, issuer, subject cryptobyte.String
-			if !val.ReadASN1(&s, asn1.SEQUENCE) ||
+			if !seq.ReadASN1(&s, asn1.SEQUENCE) ||
 				!s.ReadASN1(&issuer, asn1.OBJECT_IDENTIFIER) ||
 				!s.ReadASN1(&subject, asn1.OBJECT_IDENTIFIER) {
 				return false, errPolicyMappings
+			}
+			if !s.Empty() {
+				return false, errExtraData
 			}
 			if bytes.Equal(issuer, oidAnyPolicy) || bytes.Equal(subject, oidAnyPolicy) {
 				c.MapsAnyPolicy = true
@@ -829,7 +885,15 @@ func (c *Certificate) processExtension(oid []byte, critical bool, val cryptobyte
 	default:
 		return true, nil
 	}
-	return false, nil
+	return unhandled, emptyOrExtra(val)
+}
+
+// emptyOrExtra returns errExtraData if der has data left over.
+func emptyOrExtra(der cryptobyte.String) error {
+	if !der.Empty() {
+		return errExtraData
+	}
+	return nil
 }
 
 // nameConstraintsUnhandled is parseNameConstraintsExtension's structure check:
