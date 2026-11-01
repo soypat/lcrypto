@@ -6,6 +6,7 @@
 //	go run ./internal/cmd/lcryptogen generate                  # regenerate internal/std
 //	go run ./internal/cmd/lcryptogen -update-manifest generate # accept changed inputs
 //	go run ./internal/cmd/lcryptogen fetch                     # recreate local/_go and local/_x
+//	go run ./internal/cmd/lcryptogen check                     # fetch, then fail if internal/std is not what generate writes
 //
 // Inputs live in local/_go (GOROOT/src of the pinned toolchain) and local/_x
 // (the pinned x/crypto module). Their hashes are checked against manifest.txt so a
@@ -44,8 +45,12 @@ func main() {
 			err = fetch(root)
 		case "generate":
 			err = run(root, *updateManifest)
+		case "check":
+			if err = fetch(root); err == nil {
+				err = check(root)
+			}
 		default:
-			err = errors.New("usage: lcryptogen [-update-manifest] generate | lcryptogen fetch")
+			err = errors.New("usage: lcryptogen [-update-manifest] generate | lcryptogen fetch | lcryptogen check")
 		}
 	}
 	if err != nil {
@@ -69,6 +74,37 @@ func run(root string, updateManifest bool) error {
 		return fmt.Errorf("inputs differ from manifest.txt (run fetch, or -update-manifest to accept)")
 	}
 	return writeOutputs(root, out)
+}
+
+// check regenerates in memory and fails if the manifest or any generated file on
+// disk differs, or a stale generated file remains: generated code must be
+// exactly what the pinned inputs and this program produce.
+func check(root string) error {
+	out, inputs, err := generate(root)
+	if err != nil {
+		return err
+	}
+	var bad []string
+	if old, err := os.ReadFile(filepath.Join(root, "internal/cmd/lcryptogen/manifest.txt")); err != nil || !bytes.Equal(old, renderManifest(inputs)) {
+		bad = append(bad, "internal/cmd/lcryptogen/manifest.txt")
+	}
+	for k, want := range out {
+		if have, err := os.ReadFile(filepath.Join(root, k)); err != nil || !sameOutput(k, have, want) {
+			bad = append(bad, k)
+		}
+	}
+	for _, dir := range []string{stdDir, kitDir} {
+		stale, err := staleFiles(root, dir, out)
+		if err != nil {
+			return err
+		}
+		bad = append(bad, stale...)
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf("generated files out of date, run `go generate`:\n\t%s", strings.Join(bad, "\n\t"))
+	}
+	return nil
 }
 
 // generate ports every package and returns output files keyed by module-relative
@@ -361,6 +397,21 @@ func moduleRoot() (string, error) {
 
 // removeStale deletes generated files under dir that are no longer generated.
 func removeStale(root, dir string, out map[string][]byte) error {
+	stale, err := staleFiles(root, dir, out)
+	if err != nil {
+		return err
+	}
+	for _, rel := range stale {
+		if err := os.Remove(filepath.Join(root, rel)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// staleFiles lists the generated files under dir, module-relative, that out no longer holds.
+func staleFiles(root, dir string, out map[string][]byte) ([]string, error) {
+	var stale []string
 	err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -375,14 +426,14 @@ func removeStale(root, dir string, out map[string][]byte) error {
 			return err
 		}
 		if bytes.HasPrefix(b, []byte(headerPrefix)) || strings.HasPrefix(rel, kitDir+"/testdata/") {
-			return os.Remove(p) // Generated, or vendored vectors.
+			stale = append(stale, rel) // Generated, or vendored vectors.
 		}
 		return nil
 	})
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return nil, err
 	}
-	return nil
+	return stale, nil
 }
 
 // genVectors vendors the files of vs gzipped into kitDir/testdata.
