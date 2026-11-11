@@ -11,7 +11,6 @@ import (
 	"github.com/soypat/lcrypto/internal/std/cryptobyte"
 	"github.com/soypat/lcrypto/internal/std/cryptobyte/asn1"
 	"github.com/soypat/lcrypto/sha256"
-	"github.com/soypat/lcrypto/sha512"
 )
 
 // Credential implements [lcrypto.Credential] with an ECDSA P-256 or P-384 key
@@ -21,17 +20,17 @@ import (
 //
 // The zero Credential has no key: call [Credential.Configure]. A Credential is
 // safe for concurrent use: calls, Configure included, are serialized over its
-// working memory, about 15 KiB.
+// working memory, about 15 KiB, or 5 KiB with the build tags that drop
+// algorithms. See the README.
 type Credential struct {
 	mu     sync.Mutex
 	rand   io.Reader
 	chain  lcrypto.CertChain
 	scheme uint16
 	p256   ecdsa.P256Signer
-	p384   ecdsa.P384Signer
-	ed     ed25519.Signer
+	p384   p384Signer
+	ed     ed25519Signer
 	d256   sha256.Digest
-	d512   sha512.Digest
 	digest [64]byte
 	leaf   Certificate // Scratch of Configure.
 }
@@ -233,9 +232,7 @@ func (c *Credential) sign(sig, msg []byte, scheme uint16) (int, error) {
 		c.d256.Write(msg)
 		return c.p256.SignASN1(sig, c.d256.Sum(c.digest[:0]), c.rand)
 	}
-	c.d512.Init384()
-	c.d512.Write(msg)
-	return c.p384.SignASN1(sig, c.d512.Sum(c.digest[:0]), c.rand)
+	return c.p384.Sign(sig, msg, c.digest[:], c.rand)
 }
 
 // Zeroize wipes the private key; Configure must be called before reuse.
@@ -251,7 +248,6 @@ func (c *Credential) zeroize() {
 	c.p384.Zeroize()
 	c.ed.Zeroize()
 	c.d256 = sha256.Digest{} // Zeroize panics on a never initialized SHA-512 Digest.
-	c.d512 = sha512.Digest{}
 	clear(c.digest[:])
 }
 

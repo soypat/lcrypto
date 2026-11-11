@@ -57,6 +57,20 @@ what runs:
 
 do not use x509 for critical software- we were not able to generate it deterministically from the standard library (it is currently llm slop)
 
+## x509 build tags
+
+these tags remove algorithms from x509's `Verifier` and `Credential`, which then reject them with `ErrUnsupported`. with all three, a P-256 only device saves about 24 KiB of RAM.
+
+| tag | removes | saves on 32-bit |
+|---|---|---|
+| `lcrypto_norsa` | RSA verification | 8 KiB |
+| `lcrypto_noed25519` | Ed25519 signing and verification | 7.5 KiB |
+| `lcrypto_nop384` | P-384 signing and verification | 8.5 KiB |
+
+```sh
+tinygo build -tags lcrypto_norsa,lcrypto_noed25519,lcrypto_nop384 ...
+```
+
 # sister project: lneto
 lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto's networking https://github.com/soypat/lneto
 

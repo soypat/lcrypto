@@ -8,7 +8,6 @@ import (
 
 	"github.com/soypat/lcrypto"
 	"github.com/soypat/lcrypto/ecdsa"
-	"github.com/soypat/lcrypto/ed25519"
 	"github.com/soypat/lcrypto/rsa"
 	"github.com/soypat/lcrypto/sha256"
 	"github.com/soypat/lcrypto/sha512"
@@ -58,8 +57,8 @@ const (
 // The zero Verifier trusts nothing: call [Verifier.Configure] before use. A
 // Verifier is safe for concurrent use: calls, Configure included, are
 // serialized over its working memory. A Verifier is about 19 KiB on 32-bit
-// platforms and 20 KiB on 64-bit ones; declare it as a package variable on
-// devices with small stacks.
+// platforms and 20 KiB on 64-bit ones, or about 5 KiB with the build tags that
+// drop algorithms. Declare it as a package variable on devices with small stacks.
 type Verifier struct {
 	mu        sync.Mutex
 	roots     lcrypto.CertChain
@@ -151,9 +150,9 @@ type verifyScratch struct {
 	d256   sha256.Digest
 	d512   sha512.Digest
 	ec     ecdsa.P256Verifier
-	ec384  ecdsa.P384Verifier
-	ed     ed25519.Verifier
-	rsa    rsa.Verifier
+	ec384  p384Verifier
+	ed     ed25519Verifier
+	rsa    rsaVerifier
 }
 
 // VerifyPeer implements [lcrypto.Verifier].
