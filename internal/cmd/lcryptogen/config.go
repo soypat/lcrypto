@@ -529,6 +529,13 @@ func keccakF1600Words(a *[25]uint64) {`,
 					"// scalarMult is ScalarMult with the caller's table memory, which it overwrites.\n" +
 					"func (p *P384Point) scalarMult(q *P384Point, scalar []byte, table *p384Table) (*P384Point, error) {",
 			},
+			// TinyGo places a var in RAM unless it is given a read only section.
+			patch{
+				File: "p256_table.go",
+				Old:  "var p256PrecomputedEmbed = [...]byte{",
+				New: "//\n// TinyGo keeps the 88 KiB table in flash instead of RAM, aligned for its uint64 reads.\n//\n" +
+					"//go:section .rodata.p256table\n//go:align 8\nvar p256PrecomputedEmbed = [...]byte{",
+			},
 		),
 	},
 	{
