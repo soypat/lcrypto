@@ -27,7 +27,7 @@ type PrivateKey struct {
 	pub    [publicKeySize]byte
 	s      edwards25519.Scalar
 	prefix [sha512Size / 2]byte
-	sc     edwards25519.Scratch
+	sc     edwards25519.Scratch // lcryptogen: patch
 
 	scratch scratchPrivateKey
 }
@@ -42,7 +42,7 @@ type scratchPrivateKey struct {
 type PublicKey struct {
 	a      edwards25519.Point
 	aBytes [32]byte
-	sc     edwards25519.Scratch
+	sc     edwards25519.Scratch // lcryptogen: patch
 
 	scratch scratchPublicKey
 }
@@ -76,7 +76,7 @@ func precomputePrivateKey(priv *PrivateKey) {
 	if err != nil {
 		panic("ed25519: internal error: setting scalar failed")
 	}
-	A := (&edwards25519.Point{}).ScalarBaseMultScratch(s, &priv.sc)
+	A := (&edwards25519.Point{}).ScalarBaseMultScratch(s, &priv.sc) // lcryptogen: patch
 	var bytesArr [32]byte
 	copy(priv.pub[:], A.BytesTo(&bytesArr))
 
@@ -127,7 +127,7 @@ func signWithDom(signature []byte, priv *PrivateKey, message []byte, domPrefix, 
 		panic("ed25519: internal error: setting scalar failed")
 	}
 
-	R := (&edwards25519.Point{}).ScalarBaseMultScratch(r, &priv.sc)
+	R := (&edwards25519.Point{}).ScalarBaseMultScratch(r, &priv.sc) // lcryptogen: patch
 
 	khObj := &priv.scratch.h
 	*khObj = sha512.Digest{}
@@ -204,7 +204,7 @@ func verifyWithDom(pub *PublicKey, message, sig []byte, domPrefix, context strin
 
 	// [S]B = R + [k]A --> [k](-A) + [S]B = R
 	minusA := (&edwards25519.Point{}).Negate(&pub.a)
-	R := (&edwards25519.Point{}).VarTimeDoubleScalarBaseMultScratch(k, minusA, S, &pub.sc)
+	R := (&edwards25519.Point{}).VarTimeDoubleScalarBaseMultScratch(k, minusA, S, &pub.sc) // lcryptogen: patch
 
 	var bytesArr [32]byte
 	if !bytes.Equal(sig[:32], R.BytesTo(&bytesArr)) {

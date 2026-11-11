@@ -108,14 +108,14 @@ func (p *P384Point) SetBytes(b []byte) (*P384Point, error) {
 	}
 }
 
-var _p384B fiat.P384Element
+var _p384B fiat.P384Element // lcryptogen: patch
 
-func init() {
-	b := [...]byte{0xb3, 0x31, 0x2f, 0xa7, 0xe2, 0x3e, 0xe7, 0xe4, 0x98, 0x8e, 0x5, 0x6b, 0xe3, 0xf8, 0x2d, 0x19, 0x18, 0x1d, 0x9c, 0x6e, 0xfe, 0x81, 0x41, 0x12, 0x3, 0x14, 0x8, 0x8f, 0x50, 0x13, 0x87, 0x5a, 0xc6, 0x56, 0x39, 0x8d, 0x8a, 0x2e, 0xd1, 0x9d, 0x2a, 0x85, 0xc8, 0xed, 0xd3, 0xec, 0x2a, 0xef}
-	_p384B.SetBytes(b[:])
+func init() { // lcryptogen: patch
+	b := [...]byte{0xb3, 0x31, 0x2f, 0xa7, 0xe2, 0x3e, 0xe7, 0xe4, 0x98, 0x8e, 0x5, 0x6b, 0xe3, 0xf8, 0x2d, 0x19, 0x18, 0x1d, 0x9c, 0x6e, 0xfe, 0x81, 0x41, 0x12, 0x3, 0x14, 0x8, 0x8f, 0x50, 0x13, 0x87, 0x5a, 0xc6, 0x56, 0x39, 0x8d, 0x8a, 0x2e, 0xd1, 0x9d, 0x2a, 0x85, 0xc8, 0xed, 0xd3, 0xec, 0x2a, 0xef} // lcryptogen: patch
+	_p384B.SetBytes(b[:])                                                                                                                                                                                                                                                                                       // lcryptogen: patch
 }
 
-func p384B() *fiat.P384Element { return &_p384B }
+func p384B() *fiat.P384Element { return &_p384B } // lcryptogen: patch
 
 // p384Polynomial sets y2 to x³ - 3x + b, and returns y2.
 func p384Polynomial(y2, x *fiat.P384Element) *fiat.P384Element {
@@ -346,11 +346,11 @@ func (table *p384Table) Select(p *P384Point, n uint8) {
 
 // ScalarMult sets p = scalar * q, and returns p.
 func (p *P384Point) ScalarMult(q *P384Point, scalar []byte) (*P384Point, error) {
-	return p.scalarMult(q, scalar, new(p384Table))
+	return p.scalarMult(q, scalar, new(p384Table)) // lcryptogen: patch
 }
 
 // scalarMult is ScalarMult with the caller's table memory, which it overwrites.
-func (p *P384Point) scalarMult(q *P384Point, scalar []byte, table *p384Table) (*P384Point, error) {
+func (p *P384Point) scalarMult(q *P384Point, scalar []byte, table *p384Table) (*P384Point, error) { // lcryptogen: patch
 	table[0].Set(q)
 	for i := 1; i < 15; i += 2 {
 		table[i].Double(&table[i/2])

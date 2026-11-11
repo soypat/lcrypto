@@ -231,8 +231,13 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 			}
 			name = strings.TrimSuffix(f.Name.Name, "_test")
 		}
-		b := "package " + name + "\n\n" + strings.Join(spec.Decls, "\n\n") + "\n"
-		jobs = append(jobs, &fileJob{spec: spec, name: "decls_gen.go", src: []byte(b), origin: origin, decls: true})
+		hdr := "package " + name + "\n\n"
+		b := hdr + strings.Join(spec.Decls, "\n\n") + "\n"
+		src, err := markPatched([]byte(b), [][2]int{{len(hdr), len(b)}}, "")
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, &fileJob{spec: spec, name: "decls_gen.go", src: src, origin: origin, decls: true})
 	}
 	for _, job := range jobs {
 		f, err := parseFile(job)

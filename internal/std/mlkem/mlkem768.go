@@ -253,7 +253,7 @@ func kemKeyGen(dk *DecapsulationKey768, d, z *[32]byte) {
 	H := sha3.New256Into(&HObj)
 	ekArr := &dk.scratch.ek
 	*ekArr = [EncapsulationKeySize768]byte{}
-	ek := dk.encapsulationKeyBytes(ekArr[:0])
+	ek := dk.encapsulationKeyBytes(ekArr[:0]) // lcryptogen: patch
 	H.Write(ek)
 	H.Sum(dk.h[:0])
 }
@@ -275,7 +275,7 @@ func kemEncaps(cc *[CiphertextSize768]byte, ek *EncapsulationKey768, m *[message
 	g.Write(ek.h[:])
 	GArr := &ek.scratch.G
 	*GArr = [64]byte{}
-	G := g.Sum(GArr[:0])
+	G := g.Sum(GArr[:0]) // lcryptogen: patch
 	K, r := G[:SharedKeySize], G[SharedKeySize:]
 	c = pkeEncrypt(cc, &ek.encryptionKey, m, r)
 	return K, c
@@ -440,5 +440,5 @@ func pkeDecrypt(dx *decryptionKey, c *[CiphertextSize768]byte) []byte {
 
 	retArr := &dx.scratch.m
 	*retArr = [encodingSize1]byte{}
-	return ringCompressAndEncode1(retArr[:0], w)
+	return ringCompressAndEncode1(retArr[:0], w) // lcryptogen: patch
 }

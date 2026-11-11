@@ -55,7 +55,7 @@ func TestCredential(t *testing.T) {
 					name += "/hedged"
 				}
 				t.Run(name, func(t *testing.T) {
-					cfg := lx509.CredentialConfig{Chain: chain, Key: format.der}
+					cfg := lx509.CredentialConfig{Signers: allSigners(), Chain: chain, Key: format.der}
 					if !deterministic {
 						cfg.Rand = lt.NewRand(7)
 					}
@@ -144,7 +144,7 @@ func TestCredentialConfigureErrors(t *testing.T) {
 		{"empty", lt.Chain{leaf.DER}, nil},
 	} {
 		var cred lx509.Credential
-		if err := cred.Configure(lx509.CredentialConfig{Chain: tc.chain, Key: tc.key}); err == nil {
+		if err := cred.Configure(lx509.CredentialConfig{Signers: allSigners(), Chain: tc.chain, Key: tc.key}); err == nil {
 			t.Errorf("%s: accepted", tc.name)
 		}
 		if cred.Scheme([]uint16{lx509.SchemeECDSAP256SHA256, lx509.SchemeECDSAP384SHA384}) != 0 {
@@ -152,10 +152,10 @@ func TestCredentialConfigureErrors(t *testing.T) {
 		}
 	}
 	var cred lx509.Credential
-	if err := cred.Configure(lx509.CredentialConfig{Chain: lt.Chain{leaf.DER}, Key: good}); err != nil {
+	if err := cred.Configure(lx509.CredentialConfig{Signers: allSigners(), Chain: lt.Chain{leaf.DER}, Key: good}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cred.Configure(lx509.CredentialConfig{Chain: lt.Chain{leaf.DER}, Key: marshal(other)}); err == nil || cred.NumCerts() != 0 {
+	if err := cred.Configure(lx509.CredentialConfig{Signers: allSigners(), Chain: lt.Chain{leaf.DER}, Key: marshal(other)}); err == nil || cred.NumCerts() != 0 {
 		t.Error("failed Configure kept the previous key")
 	}
 }

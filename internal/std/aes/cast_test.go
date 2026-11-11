@@ -41,17 +41,17 @@ func TestCAST(t *testing.T) {
 				return err
 			}
 			buf := make([]byte, 16)
-			for i := range buf {
-				buf[i] = plaintext[i] ^ iv[i]
-			}
-			b.Encrypt(buf, buf)
+			for i := range buf { // lcryptogen: patch
+				buf[i] = plaintext[i] ^ iv[i] // lcryptogen: patch
+			} // lcryptogen: patch
+			b.Encrypt(buf, buf) // lcryptogen: patch
 			if !bytes.Equal(buf, ciphertext) {
 				return errors.New("unexpected result")
 			}
-			b.Decrypt(buf, ciphertext)
-			for i := range buf {
-				buf[i] ^= iv[i]
-			}
+			b.Decrypt(buf, ciphertext) // lcryptogen: patch
+			for i := range buf {       // lcryptogen: patch
+				buf[i] ^= iv[i] // lcryptogen: patch
+			} // lcryptogen: patch
 			if !bytes.Equal(buf, plaintext) {
 				return errors.New("unexpected result")
 			}

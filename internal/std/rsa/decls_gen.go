@@ -8,7 +8,7 @@ import (
 )
 
 // maxModulusBytes is the size of the largest modulus bigmod holds.
-const maxModulusBytes = bigmod.MaxBits / 8
+const maxModulusBytes = bigmod.MaxBits / 8 // lcryptogen: patch
 
 // rsaScratch holds buffers that would otherwise escape through hash.Hash or be
 // heap allocated; lcryptogen hoists them here.
@@ -24,4 +24,4 @@ type scratchRsaScratch struct {
 	h0      [64]byte
 	counter [4]byte
 	digest  [64]byte
-}
+} // lcryptogen: patch

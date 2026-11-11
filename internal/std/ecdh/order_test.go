@@ -14,7 +14,8 @@ import (
 )
 
 func TestOrders(t *testing.T) {
-	if !bytes.Equal(elliptic.P256().Params().N.Bytes(), p256Order) {
+	// lcryptogen: patch removed upstream code
+	if !bytes.Equal(elliptic.P256().Params().N.Bytes(), p256Order) { // lcryptogen: patch
 		t.Errorf("P-256 order mismatch")
-	}
+	} // lcryptogen: patch
 }

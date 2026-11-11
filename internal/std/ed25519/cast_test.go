@@ -48,7 +48,7 @@ func TestCAST(t *testing.T) {
 			}
 			k := &PrivateKey{seed: seed}
 			precomputePrivateKey(k)
-			pub, err := newPublicKey(new(PublicKey), k.PublicKeyBytes()[:])
+			pub, err := newPublicKey(new(PublicKey), k.PublicKeyBytes()[:]) // lcryptogen: patch
 			if err != nil {
 				return err
 			}

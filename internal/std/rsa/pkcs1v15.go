@@ -60,7 +60,7 @@ func pkcs1v15ConstructEM(sc *rsaScratch, pub *PublicKey, hash string, hashed []b
 	}
 	emArr := &sc.scratch.em
 	*emArr = [maxModulusBytes]byte{}
-	em := emArr[:][:k]
+	em := emArr[:][:k] // lcryptogen: patch
 	em[1] = 1
 	for i := 2; i < k-len(prefix)-len(hashed)-1; i++ {
 		em[i] = 0xff

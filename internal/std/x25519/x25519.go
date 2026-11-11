@@ -60,5 +60,5 @@ func x25519ScalarMult(dst, scalar, point []byte) {
 
 	z2.Invert(&z2)
 	x2.Multiply(&x2, &z2)
-	x2.BytesTo((*[32]byte)(dst))
+	x2.BytesTo((*[32]byte)(dst)) // lcryptogen: patch
 }

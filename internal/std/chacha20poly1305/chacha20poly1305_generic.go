@@ -41,16 +41,16 @@ func (c *chacha20poly1305) sealGeneric(dst, nonce, plaintext, additionalData []b
 		panic("chacha20poly1305: invalid buffer overlap of output and additional data")
 	}
 
-	polyKey := &c.polyKey
-	*polyKey = [32]byte{}
-	s := &c.stream
-	s.Init(c.key[:], nonce)
+	polyKey := &c.polyKey   // lcryptogen: patch
+	*polyKey = [32]byte{}   // lcryptogen: patch
+	s := &c.stream          // lcryptogen: patch
+	s.Init(c.key[:], nonce) // lcryptogen: patch
 	s.XORKeyStream(polyKey[:], polyKey[:])
 	s.SetCounter(1) // set the counter to 1, skipping 32 bytes
 	s.XORKeyStream(ciphertext, plaintext)
 
-	p := &c.mac
-	p.Init(polyKey)
+	p := &c.mac     // lcryptogen: patch
+	p.Init(polyKey) // lcryptogen: patch
 	writeWithPadding(c, p, additionalData)
 	writeWithPadding(c, p, ciphertext)
 	writeUint64(c, p, len(additionalData))
@@ -64,15 +64,15 @@ func (c *chacha20poly1305) openGeneric(dst, nonce, ciphertext, additionalData []
 	tag := ciphertext[len(ciphertext)-16:]
 	ciphertext = ciphertext[:len(ciphertext)-16]
 
-	polyKey := &c.polyKey
-	*polyKey = [32]byte{}
-	s := &c.stream
-	s.Init(c.key[:], nonce)
+	polyKey := &c.polyKey   // lcryptogen: patch
+	*polyKey = [32]byte{}   // lcryptogen: patch
+	s := &c.stream          // lcryptogen: patch
+	s.Init(c.key[:], nonce) // lcryptogen: patch
 	s.XORKeyStream(polyKey[:], polyKey[:])
 	s.SetCounter(1) // set the counter to 1, skipping 32 bytes
 
-	p := &c.mac
-	p.Init(polyKey)
+	p := &c.mac     // lcryptogen: patch
+	p.Init(polyKey) // lcryptogen: patch
 	writeWithPadding(c, p, additionalData)
 	writeWithPadding(c, p, ciphertext)
 	writeUint64(c, p, len(additionalData))

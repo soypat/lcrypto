@@ -9,7 +9,7 @@ import (
 
 func TestNoExtraMethods(t *testing.T) {
 	var v lcrypto.Verifier = new(Verifier)
-	cryptotest.NoExtraMethods(t, &v, "Configure", "VerifyChain", "VerifyChainAnyName")
+	cryptotest.NoExtraMethods(t, &v, "Configure", "Schemes", "VerifyChain", "VerifyChainAnyName")
 	var c lcrypto.Credential = new(Credential)
 	cryptotest.NoExtraMethods(t, &c, "Configure", "Zeroize")
 }

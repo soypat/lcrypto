@@ -150,7 +150,7 @@ func (d *Digest) sumGeneric(b []byte) []byte {
 
 	// Make a copy of the original hash so that caller can keep writing
 	// and summing.
-	dup := *d
+	dup := *d // lcryptogen: patch
 	var hashArr [64]byte
 	hash := hashArr[:dup.outputLen] // explicit cap to allow stack allocation
 	dup.read(hash)

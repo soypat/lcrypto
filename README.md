@@ -57,6 +57,22 @@ what runs:
 
 do not use x509 for critical software- we were not able to generate it deterministically from the standard library (it is currently llm slop)
 
+## x509 algorithms
+
+x509's `Verifier` and `Credential` link only the algorithms you pass them, no build tags needed. a P-256-only device:
+
+```go
+var (
+	verifier x509.Verifier
+	p256     x509.P256Verifier
+	algs     = [...]x509.SignatureVerifier{&p256}
+)
+
+err := verifier.Configure(x509.VerifierConfig{Roots: roots, Nanotime: now, Algorithms: algs[:]})
+```
+
+on a pico this verifier takes 33% less flash (175 KB vs 262 KB) and 16 KB less RAM than one with RSA, P-384 and Ed25519 too. `Credential` takes `Signers` the same way. advertise `Verifier.Schemes` in signature_algorithms so servers do not pick a certificate you cannot verify.
+
 # sister project: lneto
 lneto is a networking stack. we need tls in lneto and lcrypto will be the crypto side of lneto's networking https://github.com/soypat/lneto
 

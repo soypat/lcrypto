@@ -40,14 +40,16 @@ const (
 	errCertView             // x509: peer certificate chain unreadable
 	errCertSignature        // x509: certificate signature invalid
 	errCertificateVerify    // x509: CertificateVerify signature invalid
+	errAlgorithms           // x509: VerifierConfig.Algorithms empty, nil, duplicate or unsupported
 
 	// Credential configuration and signing.
 	errKeyDER       // x509: failed to parse EC private key
 	errKeyCurve     // x509: private key curve does not match the certificate
 	errKeyPublic    // x509: private key does not match the certificate public key
-	errLeafKey      // x509: certificate key is not ECDSA P-256, P-384 or Ed25519
+	errLeafKey      // x509: no CredentialConfig.Signers entry for the certificate key
 	errNoCredential // x509: Credential has no key
 	errSignScheme   // x509: signature scheme not offered by the Credential
+	errSigners      // x509: CredentialConfig.Signers empty, nil, duplicate or unsupported
 
 	// Certificate.Parse.
 	errMalformedCert         // x509: malformed certificate
@@ -127,8 +129,8 @@ func (err errX509) Alert() uint8 {
 		return 51 // decrypt_error
 	case errNoCerts:
 		return 116 // certificate_required
-	case errNoRoots, errNotConfigured, errNoClock, errRootParse, errLimit, errIndex, errNoName, errCertView,
-		errKeyDER, errKeyCurve, errKeyPublic, errLeafKey, errNoCredential, errSignScheme:
+	case errNoRoots, errNotConfigured, errNoClock, errRootParse, errLimit, errIndex, errNoName, errCertView, errAlgorithms,
+		errKeyDER, errKeyCurve, errKeyPublic, errLeafKey, errNoCredential, errSignScheme, errSigners:
 		return 80 // internal_error
 	}
 	return 42 // bad_certificate

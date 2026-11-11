@@ -36,7 +36,7 @@ func mgf1XOR(sc *rsaScratch, out []byte, hash hash.Hash, seed []byte) {
 	*counter = [4]byte{}
 	digestArr := &sc.scratch.digest
 	*digestArr = [64]byte{}
-	digest := digestArr[:0]
+	digest := digestArr[:0] // lcryptogen: patch
 
 	done := 0
 	for done < len(out) {
@@ -152,7 +152,7 @@ func emsaPSSVerify(sc *rsaScratch, mHash, em []byte, emBits, sLen int, hash hash
 
 	h0Arr := &sc.scratch.h0
 	*h0Arr = [64]byte{}
-	h0 := hash.Sum(h0Arr[:0])
+	h0 := hash.Sum(h0Arr[:0]) // lcryptogen: patch
 
 	// 14. If H = H', output "consistent." Otherwise, output "inconsistent."
 	if !bytes.Equal(h0, h) {

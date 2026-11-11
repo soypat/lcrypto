@@ -18,7 +18,7 @@ import (
 func SkipTestAllocations(t *testing.T) {
 
 	// The sanitizers sometimes cause allocations.
-	if testenv.SanitizersEnabled {
+	if testenv.SanitizersEnabled { // lcryptogen: patch
 		t.Skip("skipping allocations test with sanitizers")
 	}
 

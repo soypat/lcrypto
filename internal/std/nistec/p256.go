@@ -114,14 +114,14 @@ func (p *P256Point) SetBytes(b []byte) (*P256Point, error) {
 	}
 }
 
-var _p256B fiat.P256Element
+var _p256B fiat.P256Element // lcryptogen: patch
 
-func init() {
-	b := [...]byte{0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98, 0x86, 0xbc, 0x65, 0x1d, 0x6, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2, 0x60, 0x4b}
-	_p256B.SetBytes(b[:])
+func init() { // lcryptogen: patch
+	b := [...]byte{0x5a, 0xc6, 0x35, 0xd8, 0xaa, 0x3a, 0x93, 0xe7, 0xb3, 0xeb, 0xbd, 0x55, 0x76, 0x98, 0x86, 0xbc, 0x65, 0x1d, 0x6, 0xb0, 0xcc, 0x53, 0xb0, 0xf6, 0x3b, 0xce, 0x3c, 0x3e, 0x27, 0xd2, 0x60, 0x4b} // lcryptogen: patch
+	_p256B.SetBytes(b[:])                                                                                                                                                                                         // lcryptogen: patch
 }
 
-func p256B() *fiat.P256Element { return &_p256B }
+func p256B() *fiat.P256Element { return &_p256B } // lcryptogen: patch
 
 // p256Polynomial sets y2 to x³ - 3x + b, and returns y2.
 func p256Polynomial(y2, x *fiat.P256Element) *fiat.P256Element {
@@ -493,10 +493,10 @@ func boothW5(in uint64) (uint8, int) {
 // and returns r. If scalar is not 32 bytes long, ScalarMult returns an error
 // and the receiver is unchanged.
 func (p *P256Point) ScalarMult(q *P256Point, scalar []byte) (*P256Point, error) {
-	return p.scalarMult(q, scalar, new(p256Table))
+	return p.scalarMult(q, scalar, new(p256Table)) // lcryptogen: patch
 }
 
-func (p *P256Point) scalarMult(q *P256Point, scalar []byte, table *p256Table) (*P256Point, error) {
+func (p *P256Point) scalarMult(q *P256Point, scalar []byte, table *p256Table) (*P256Point, error) { // lcryptogen: patch
 	s, err := new(p256OrdElement).SetBytes(scalar)
 	if err != nil {
 		return nil, err
@@ -513,7 +513,7 @@ func (p *P256Point) scalarMult(q *P256Point, scalar []byte, table *p256Table) (*
 
 	// Neither Select nor Add have exceptions for the point at infinity /
 	// selector zero, so we don't need to check for it here or in the loop.
-	table.Compute(q)
+	table.Compute(q) // lcryptogen: patch
 	table.Select(p, sel)
 
 	var tObj P256Point

@@ -35,6 +35,16 @@ var (
 	sigBuf           [ecdsa.P384SignatureMaxSize]byte
 	certs            x509.Chain
 
+	p256Alg     x509.P256Verifier
+	p384Alg     x509.P384Verifier
+	edAlg       x509.Ed25519Verifier
+	rsaAlg      x509.RSAVerifier
+	p256Signer  x509.P256Signer
+	p384Signer  x509.P384Signer
+	edKeySigner x509.Ed25519Signer
+	algs        = [...]x509.SignatureVerifier{&p256Alg, &p384Alg, &edAlg, &rsaAlg}
+	signers     = [...]x509.KeySigner{&p256Signer, &p384Signer, &edKeySigner}
+
 	cs     [p256.ShareSize]byte
 	ss     [p256.ShareSize]byte
 	shared [2][p256.SharedSize]byte
@@ -86,10 +96,10 @@ func main() {
 	certs = x509.Chain{modulus[:], modulus[:]}
 	// Roots are a pointer: boxing the slice would allocate. Configure rejects
 	// the garbage roots; VerifyPeer then fails unconfigured.
-	println(certVerifier.Configure(x509.VerifierConfig{Roots: &certs, Nanotime: nanotime, MaxPeerCerts: 4}) == nil)
+	println(certVerifier.Configure(x509.VerifierConfig{Roots: &certs, Nanotime: nanotime, MaxPeerCerts: 4, Algorithms: algs[:]}) == nil)
 	println(certVerifier.VerifyPeer(&certs, x509.SchemeECDSAP256SHA256, true, modulus[:8], modulus[:], modulus[:]) == nil)
 	// Signing: the key fails to parse, but Sign is reachable; the P-384 signer signs hedged.
-	println(cred.Configure(x509.CredentialConfig{Chain: &certs, Key: modulus[:], Rand: &rand}) == nil)
+	println(cred.Configure(x509.CredentialConfig{Chain: &certs, Key: modulus[:], Rand: &rand, Signers: signers[:]}) == nil)
 	cred.Sign(sigBuf[:], modulus[:], x509.SchemeECDSAP256SHA256)
 	signer.SetKey(modulus[:48])
 	n, err := signer.SignASN1(sigBuf[:], shared[0][:], &rand)
