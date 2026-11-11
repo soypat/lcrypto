@@ -546,6 +546,13 @@ func keccakF1600Words(a *[25]uint64) {`,
 				Old: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, err\n",
 				New: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, errInvalidScalarLength\n",
 			},
+			// TinyGo places a var in RAM unless it is given a read only section.
+			patch{
+				File: "p256_table.go",
+				Old:  "var p256PrecomputedEmbed = [...]byte{",
+				New: "//\n// TinyGo keeps the 88 KiB table in flash instead of RAM, aligned for its uint64 reads.\n//\n" +
+					"//go:section .rodata.p256table\n//go:align 8\nvar p256PrecomputedEmbed = [...]byte{",
+			},
 		),
 	},
 	{
