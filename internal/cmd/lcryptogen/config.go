@@ -545,6 +545,7 @@ func keccakF1600Words(a *[25]uint64) {`,
 				File: "p256.go", Count: 2,
 				Old: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, err\n",
 				New: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, errInvalidScalarLength\n",
+			},
 			// TinyGo places a var in RAM unless it is given a read only section.
 			patch{
 				File: "p256_table.go",
