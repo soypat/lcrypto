@@ -69,11 +69,11 @@ func (p *P256Point) SetBytes(b []byte) (*P256Point, error) {
 	case len(b) == p256UncompressedLength && b[0] == 4:
 		x, err := new(fiat.P256Element).SetBytes(b[1 : 1+p256ElementLength])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP256PointEncoding // lcryptogen: patch
 		}
 		y, err := new(fiat.P256Element).SetBytes(b[1+p256ElementLength:])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP256PointEncoding // lcryptogen: patch
 		}
 		if err := p256CheckOnCurve(x, y); err != nil {
 			return nil, err
@@ -87,7 +87,7 @@ func (p *P256Point) SetBytes(b []byte) (*P256Point, error) {
 	case len(b) == p256CompressedLength && (b[0] == 2 || b[0] == 3):
 		x, err := new(fiat.P256Element).SetBytes(b[1:])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP256PointEncoding // lcryptogen: patch
 		}
 
 		// y² = x³ - 3x + b
@@ -499,7 +499,7 @@ func (p *P256Point) ScalarMult(q *P256Point, scalar []byte) (*P256Point, error) 
 func (p *P256Point) scalarMult(q *P256Point, scalar []byte, table *p256Table) (*P256Point, error) { // lcryptogen: patch
 	s, err := new(p256OrdElement).SetBytes(scalar)
 	if err != nil {
-		return nil, err
+		return nil, errInvalidScalarLength // lcryptogen: patch
 	}
 
 	// Start scanning the window from the most significant bits. We move by
@@ -609,7 +609,7 @@ func (p *P256Point) ScalarBaseMult(scalar []byte) (*P256Point, error) {
 
 	s, err := new(p256OrdElement).SetBytes(scalar)
 	if err != nil {
-		return nil, err
+		return nil, errInvalidScalarLength // lcryptogen: patch
 	}
 
 	// Start scanning the window from the most significant bits. We move by

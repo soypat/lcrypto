@@ -63,11 +63,11 @@ func (p *P384Point) SetBytes(b []byte) (*P384Point, error) {
 	case len(b) == 1+2*p384ElementLength && b[0] == 4:
 		x, err := new(fiat.P384Element).SetBytes(b[1 : 1+p384ElementLength])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP384PointEncoding // lcryptogen: patch
 		}
 		y, err := new(fiat.P384Element).SetBytes(b[1+p384ElementLength:])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP384PointEncoding // lcryptogen: patch
 		}
 		if err := p384CheckOnCurve(x, y); err != nil {
 			return nil, err
@@ -81,7 +81,7 @@ func (p *P384Point) SetBytes(b []byte) (*P384Point, error) {
 	case len(b) == 1+p384ElementLength && (b[0] == 2 || b[0] == 3):
 		x, err := new(fiat.P384Element).SetBytes(b[1:])
 		if err != nil {
-			return nil, err
+			return nil, errInvalidP384PointEncoding // lcryptogen: patch
 		}
 
 		// y² = x³ - 3x + b

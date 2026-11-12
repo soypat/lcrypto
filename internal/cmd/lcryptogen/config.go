@@ -529,6 +529,23 @@ func keccakF1600Words(a *[25]uint64) {`,
 					"// scalarMult is ScalarMult with the caller's table memory, which it overwrites.\n" +
 					"func (p *P384Point) scalarMult(q *P384Point, scalar []byte, table *p384Table) (*P384Point, error) {",
 			},
+			// SetBytes returns its receiver alongside the error, and TinyGo cannot tell
+			// the two results apart: returning that error would move the new element
+			// to the heap. Return this package's error instead; the scalar's
+			// SetBytes only fails with errInvalidScalarLength.
+			patch{
+				File: "p256.go", Decl: "P256Point.SetBytes", Count: 3,
+				Old: "if err != nil {\n\t\t\treturn nil, err\n", New: "if err != nil {\n\t\t\treturn nil, errInvalidP256PointEncoding\n",
+			},
+			patch{
+				File: "p384.go", Decl: "P384Point.SetBytes", Count: 3,
+				Old: "if err != nil {\n\t\t\treturn nil, err\n", New: "if err != nil {\n\t\t\treturn nil, errInvalidP384PointEncoding\n",
+			},
+			patch{
+				File: "p256.go", Count: 2,
+				Old: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, err\n",
+				New: "s, err := new(p256OrdElement).SetBytes(scalar)\n\tif err != nil {\n\t\treturn nil, errInvalidScalarLength\n",
+			},
 		),
 	},
 	{
