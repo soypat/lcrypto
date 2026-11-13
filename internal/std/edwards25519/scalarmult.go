@@ -12,18 +12,18 @@ package edwards25519
 //
 // The scalar multiplication is done in constant time.
 func (v *Point) ScalarBaseMult(x *Scalar) *Point {
-	return v.scalarMult(x, generator, new(projLookupTable))
-}
+	return v.scalarMult(x, generator, new(projLookupTable)) // lcryptogen: patch
+} // lcryptogen: patch
 
 // ScalarMult sets v = x * q, and returns v.
 //
 // The scalar multiplication is done in constant time.
 func (v *Point) ScalarMult(x *Scalar, q *Point) *Point {
-	return v.scalarMult(x, q, new(projLookupTable))
-}
+	return v.scalarMult(x, q, new(projLookupTable)) // lcryptogen: patch
+} // lcryptogen: patch
 
 // scalarMult is ScalarMult with the caller's table memory, which it overwrites.
-func (v *Point) scalarMult(x *Scalar, q *Point, table *projLookupTable) *Point {
+func (v *Point) scalarMult(x *Scalar, q *Point, table *projLookupTable) *Point { // lcryptogen: patch
 	checkInitialized(q)
 
 	table.FromP3(q)
@@ -68,12 +68,12 @@ func (v *Point) scalarMult(x *Scalar, q *Point, table *projLookupTable) *Point {
 //
 // Execution time depends on the inputs.
 func (v *Point) VarTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar) *Point {
-	return v.varTimeDoubleScalarBaseMult(a, A, b, new(nafLookupTable5), new(nafLookupTable5))
-}
+	return v.varTimeDoubleScalarBaseMult(a, A, b, new(nafLookupTable5), new(nafLookupTable5)) // lcryptogen: patch
+} // lcryptogen: patch
 
 // varTimeDoubleScalarBaseMult is VarTimeDoubleScalarBaseMult with the caller's
 // table memory, which it overwrites. The base point gets a width 5 table too.
-func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTable, bTable *nafLookupTable5) *Point {
+func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTable, bTable *nafLookupTable5) *Point { // lcryptogen: patch
 	checkInitialized(A)
 
 	// Similarly to the single variable-base approach, we compute
@@ -91,9 +91,9 @@ func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTab
 	// fewer additions).
 
 	aTable.FromP3(A)
-	bTable.FromP3(generator)
+	bTable.FromP3(generator) // lcryptogen: patch
 	aNaf := a.nonAdjacentForm(5)
-	bNaf := b.nonAdjacentForm(5)
+	bNaf := b.nonAdjacentForm(5) // lcryptogen: patch
 
 	// Find the first nonzero coefficient.
 	i := 255
@@ -105,7 +105,7 @@ func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTab
 	}
 
 	multA := &projCached{}
-	multB := &projCached{}
+	multB := &projCached{} // lcryptogen: patch
 	tmp1 := &projP1xP1{}
 	tmp2 := &projP2{}
 	tmp2.Zero()
@@ -129,12 +129,12 @@ func (v *Point) varTimeDoubleScalarBaseMult(a *Scalar, A *Point, b *Scalar, aTab
 
 		if bNaf[i] > 0 {
 			v.fromP1xP1(tmp1)
-			bTable.SelectInto(multB, bNaf[i])
-			tmp1.Add(v, multB)
+			bTable.SelectInto(multB, bNaf[i]) // lcryptogen: patch
+			tmp1.Add(v, multB)                // lcryptogen: patch
 		} else if bNaf[i] < 0 {
 			v.fromP1xP1(tmp1)
-			bTable.SelectInto(multB, -bNaf[i])
-			tmp1.Sub(v, multB)
+			bTable.SelectInto(multB, -bNaf[i]) // lcryptogen: patch
+			tmp1.Sub(v, multB)                 // lcryptogen: patch
 		}
 
 		tmp2.FromP1xP1(tmp1)

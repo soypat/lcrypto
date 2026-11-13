@@ -47,17 +47,17 @@ func LoadVectorFile(t *testing.T, filename string, value any) {
 	//
 	// If -wycheproof-dir is set, read from that local checkout instead, to
 	// support testing local updates to Wycheproof.
-	var content []byte
-	if dir := *wycheproofDir; dir != "" {
-		var err error
-		if content, err = os.ReadFile(path.Join(dir, "testvectors_v1", filename)); err != nil {
+	var content []byte                    // lcryptogen: patch
+	if dir := *wycheproofDir; dir != "" { // lcryptogen: patch
+		var err error                                                                           // lcryptogen: patch
+		if content, err = os.ReadFile(path.Join(dir, "testvectors_v1", filename)); err != nil { // lcryptogen: patch
 			t.Fatalf("missing Wycheproof vector file %q: %v", filename, err)
 		}
-	} else {
-		content = cryptotest.Vectors(t, "wycheproof", filename)
+	} else { // lcryptogen: patch
+		content = cryptotest.Vectors(t, "wycheproof", filename) // lcryptogen: patch
 	}
 
-	err := json.Unmarshal(content, value)
+	err := json.Unmarshal(content, value) // lcryptogen: patch
 	if err != nil {
 		t.Fatalf("failed to unmarshal vector file %q: %v", filename, err)
 	}

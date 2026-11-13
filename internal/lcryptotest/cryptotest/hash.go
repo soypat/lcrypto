@@ -35,7 +35,7 @@ func TestHash(t *testing.T, mh MakeHash) {
 		h.Sum(end[:0])
 	})
 
-	if _, ok := mh().(hash.Cloner); !ok { // lcrypto digests do not allocate clones.
+	if _, ok := mh().(hash.Cloner); !ok { // lcrypto digests do not allocate clones. // lcryptogen: patch
 		testhash.TestHashWithoutClone(t, testhash.MakeHash(mh))
 		return
 	}

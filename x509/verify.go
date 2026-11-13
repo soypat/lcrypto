@@ -7,11 +7,7 @@ import (
 	"sync"
 
 	"github.com/soypat/lcrypto"
-	"github.com/soypat/lcrypto/ecdsa"
-	"github.com/soypat/lcrypto/ed25519"
 	"github.com/soypat/lcrypto/rsa"
-	"github.com/soypat/lcrypto/sha256"
-	"github.com/soypat/lcrypto/sha512"
 )
 
 // RFC 8446 4.2.3 signature schemes accepted in CertificateVerify.
@@ -50,16 +46,19 @@ const (
 //
 // Certificates may carry RSA keys of MinRSABits (by default 2048) to 4096
 // bits, ECDSA P-256 and P-384 keys and Ed25519 keys, and be signed with Ed25519
-// or with PKCS #1 v1.5, PSS or ECDSA over SHA-256, SHA-384 or SHA-512.
-// Chains through CAs with name constraints, a policy constraint requiring
-// explicit policy or a mapping of anyPolicy, and chains that need other curves,
-// are rejected with [ErrUnsupported]. There is no revocation checking.
+// or with PKCS #1 v1.5, PSS or ECDSA over SHA-256, SHA-384 or SHA-512, each
+// as far as [VerifierConfig.Algorithms] lists a [SignatureVerifier] for the key.
+// Chains needing an algorithm not listed, chains through CAs with name
+// constraints, a policy constraint requiring explicit policy or a mapping of
+// anyPolicy, and chains that need other curves, are rejected with
+// [ErrUnsupported]. There is no revocation checking.
 //
 // The zero Verifier trusts nothing: call [Verifier.Configure] before use. A
 // Verifier is safe for concurrent use: calls, Configure included, are
-// serialized over its working memory. A Verifier is about 19 KiB on 32-bit
-// platforms and 20 KiB on 64-bit ones; declare it as a package variable on
-// devices with small stacks.
+// serialized over its working memory. A Verifier is about 1.5 KiB on 32-bit
+// platforms and 2.5 KiB on 64-bit ones, plus its Algorithms, from 3 KiB for
+// [P256Verifier] to 9 KiB for [RSAVerifier]; declare them as package variables
+// on devices with small stacks.
 type Verifier struct {
 	mu        sync.Mutex
 	roots     lcrypto.CertChain
@@ -68,6 +67,7 @@ type Verifier struct {
 	maxChain  int
 	maxChecks int
 	minRSA    int
+	algs      [MLDSA + 1]SignatureVerifier // Indexed by PublicKeyAlgorithm. nil is ErrUnsupported.
 	sc        verifyScratch
 }
 
@@ -97,6 +97,11 @@ type VerifierConfig struct {
 	// every signing key, from rsa.MinBits to rsa.MaxBits and by default
 	// DefaultMinRSABits. crypto/x509 accepts 1024.
 	MinRSABits int
+	// Algorithms verify signatures, at most one per PublicKeyAlgorithm of
+	// ECDSAP256, ECDSAP384, Ed25519 and RSA. At least one is required. They
+	// must not be shared with another Verifier. Only the implementations a
+	// program names are linked, so list what peers need, e.g. [P256Verifier].
+	Algorithms []SignatureVerifier
 }
 
 // Configure checks cfg and makes v verify against it. Every root is parsed
@@ -107,6 +112,7 @@ func (v *Verifier) Configure(cfg VerifierConfig) error {
 	err := v.configure(cfg)
 	if err != nil {
 		v.roots = nil
+		v.algs = [len(v.algs)]SignatureVerifier{}
 	}
 	v.mu.Unlock()
 	return err
@@ -122,6 +128,25 @@ func (v *Verifier) configure(cfg VerifierConfig) error {
 	if cfg.MaxPeerCerts < 0 || cfg.MaxChainLen < 0 || cfg.MaxChainLen > MaxChainLen || cfg.MaxSignatureChecks < 0 ||
 		cfg.MinRSABits != 0 && (cfg.MinRSABits < rsa.MinBits || cfg.MinRSABits > rsa.MaxBits) {
 		return errLimit
+	}
+	if len(cfg.Algorithms) == 0 {
+		return errAlgorithms
+	}
+	v.algs = [len(v.algs)]SignatureVerifier{}
+	for _, a := range cfg.Algorithms {
+		if a == nil {
+			return errAlgorithms
+		}
+		k := a.PublicKeyAlgorithm()
+		switch k {
+		case ECDSAP256, ECDSAP384, Ed25519, RSA:
+		default:
+			return errAlgorithms
+		}
+		if v.algs[k] != nil {
+			return errAlgorithms
+		}
+		v.algs[k] = a
 	}
 	c := &v.sc.chain[0]
 	for i := range cfg.Roots.NumCerts() {
@@ -144,16 +169,30 @@ func (v *Verifier) configure(cfg VerifierConfig) error {
 
 var _ lcrypto.Verifier = (*Verifier)(nil)
 
+// Schemes appends to dst the RFC 8446 signature schemes the configured
+// Algorithms verify, for the signature_algorithms extension: advertising one
+// not verified lets a server pick a certificate that fails.
+func (v *Verifier) Schemes(dst []uint16) []uint16 {
+	v.mu.Lock()
+	if v.algs[ECDSAP256] != nil {
+		dst = append(dst, SchemeECDSAP256SHA256)
+	}
+	if v.algs[Ed25519] != nil {
+		dst = append(dst, SchemeEd25519)
+	}
+	if v.algs[ECDSAP384] != nil {
+		dst = append(dst, SchemeECDSAP384SHA384)
+	}
+	if v.algs[RSA] != nil {
+		dst = append(dst, SchemeRSAPSSSHA256, SchemeRSAPSSSHA384, SchemeRSAPSSSHA512)
+	}
+	v.mu.Unlock()
+	return dst
+}
+
 type verifyScratch struct {
-	chain  [MaxChainLen]Certificate // chain[0] is the leaf; chain[i+1] signs chain[i].
-	next   [MaxChainLen]int         // Next candidate index to try as chain[i+1].
-	digest [64]byte
-	d256   sha256.Digest
-	d512   sha512.Digest
-	ec     ecdsa.P256Verifier
-	ec384  ecdsa.P384Verifier
-	ed     ed25519.Verifier
-	rsa    rsa.Verifier
+	chain [MaxChainLen]Certificate // chain[0] is the leaf; chain[i+1] signs chain[i].
+	next  [MaxChainLen]int         // Next candidate index to try as chain[i+1].
 }
 
 // VerifyPeer implements [lcrypto.Verifier].
@@ -246,54 +285,69 @@ func (v *Verifier) verifyChain(chainView lcrypto.CertChain, usage ExtKeyUsage, n
 // crypto/tls verifyHandshakeSignature does for TLS 1.3.
 func (v *Verifier) verifyCertificateVerify(leaf *Certificate, scheme uint16, msg, sig []byte) error {
 	err := v.certificateVerify(leaf, scheme, msg, sig)
-	if err != nil && err != ErrScheme {
+	if err != nil && err != ErrScheme && err != ErrUnsupported {
 		err = errCertificateVerify // The signature packages' errors map to no alert.
 	}
 	return err
 }
 
 func (v *Verifier) certificateVerify(leaf *Certificate, scheme uint16, msg, sig []byte) error {
-	sc := &v.sc
+	var key PublicKeyAlgorithm
+	var alg SignatureAlgorithm
 	switch scheme {
 	case SchemeECDSAP256SHA256:
-		if leaf.PublicKeyAlgorithm != ECDSAP256 {
-			return ErrScheme
-		}
-		return sc.ec.VerifyASN1(leaf.PublicKey, sc.hash(rsa.SHA256, msg), sig)
-	case SchemeEd25519:
-		if leaf.PublicKeyAlgorithm != Ed25519 {
-			return ErrScheme
-		}
-		return sc.ed.Verify(leaf.PublicKey, msg, sig)
+		key, alg = ECDSAP256, ECDSAWithSHA256
 	case SchemeECDSAP384SHA384:
-		if leaf.PublicKeyAlgorithm != ECDSAP384 {
-			return ErrScheme
-		}
-		return sc.ec384.VerifyASN1(leaf.PublicKey, sc.hash(rsa.SHA384, msg), sig)
-	case SchemeRSAPSSSHA256, SchemeRSAPSSSHA384, SchemeRSAPSSSHA512:
-		if leaf.PublicKeyAlgorithm != RSA {
-			return ErrScheme
-		}
-		h := rsa.Hash(scheme - SchemeRSAPSSSHA256 + uint16(rsa.SHA256))
-		return sc.rsa.VerifyPSS(leaf.PublicKey, leaf.RSAExponent, h, sc.hash(h, msg), sig)
+		key, alg = ECDSAP384, ECDSAWithSHA384
+	case SchemeEd25519:
+		key, alg = Ed25519, PureEd25519
+	case SchemeRSAPSSSHA256:
+		key, alg = RSA, SHA256WithRSAPSS
+	case SchemeRSAPSSSHA384:
+		key, alg = RSA, SHA384WithRSAPSS
+	case SchemeRSAPSSSHA512:
+		key, alg = RSA, SHA512WithRSAPSS
+	default:
+		return ErrScheme
 	}
-	return ErrScheme
+	if leaf.PublicKeyAlgorithm != key {
+		return ErrScheme
+	}
+	return v.verifySignature(leaf, alg, msg, sig)
 }
 
-// hash returns the digest of msg in sc.digest.
-func (sc *verifyScratch) hash(h rsa.Hash, msg []byte) []byte {
-	switch h {
-	case rsa.SHA256:
-		sc.d256.Init()
-		sc.d256.Write(msg)
-		return sc.d256.Sum(sc.digest[:0])
-	case rsa.SHA384:
-		sc.d512.Init384()
+// verifySignature checks sig is key's signature of msg under alg with the
+// configured Algorithms, after the checks no SignatureVerifier is trusted with.
+func (v *Verifier) verifySignature(key *Certificate, alg SignatureAlgorithm, msg, sig []byte) error {
+	k := key.PublicKeyAlgorithm
+	switch alg {
+	case PureEd25519:
+		if k != Ed25519 {
+			return errKeyMismatch
+		}
+	case ECDSAWithSHA256, ECDSAWithSHA384, ECDSAWithSHA512:
+		switch k {
+		case ECDSAP224, ECDSAP521:
+			return ErrUnsupported
+		case ECDSAP256, ECDSAP384:
+		default:
+			return errKeyMismatch
+		}
+	case SHA256WithRSA, SHA384WithRSA, SHA512WithRSA, SHA256WithRSAPSS, SHA384WithRSAPSS, SHA512WithRSAPSS:
+		if k != RSA {
+			return errKeyMismatch
+		}
+		if rsaBits(key.PublicKey) < v.minRSA {
+			return errWeakRSA
+		}
 	default:
-		sc.d512.Init()
+		return errSignatureAlgorithm
 	}
-	sc.d512.Write(msg)
-	return sc.d512.Sum(sc.digest[:0])
+	sv := v.algs[k] // k is ECDSAP256, ECDSAP384, Ed25519 or RSA: in range.
+	if sv == nil {
+		return ErrUnsupported
+	}
+	return sv.VerifySignature(key, alg, msg, sig)
 }
 
 // checkValid is isValid's checks on c alone.
@@ -491,51 +545,7 @@ func (v *Verifier) checkSignature(c, parent *Certificate) error {
 	if parent.KeyUsage != 0 && parent.KeyUsage&KeyUsageCertSign == 0 {
 		return errConstraint
 	}
-	sc := &v.sc
-	if c.SignatureAlgorithm == PureEd25519 {
-		if parent.PublicKeyAlgorithm != Ed25519 {
-			return errKeyMismatch
-		}
-		return sc.ed.Verify(parent.PublicKey, c.RawTBSCertificate, c.Signature)
-	}
-	var h rsa.Hash
-	var pss bool
-	switch c.SignatureAlgorithm {
-	case SHA256WithRSA, SHA256WithRSAPSS, ECDSAWithSHA256:
-		h = rsa.SHA256
-	case SHA384WithRSA, SHA384WithRSAPSS, ECDSAWithSHA384:
-		h = rsa.SHA384
-	case SHA512WithRSA, SHA512WithRSAPSS, ECDSAWithSHA512:
-		h = rsa.SHA512
-	default:
-		return errSignatureAlgorithm
-	}
-	switch c.SignatureAlgorithm {
-	case ECDSAWithSHA256, ECDSAWithSHA384, ECDSAWithSHA512:
-		digest := sc.hash(h, c.RawTBSCertificate)
-		switch parent.PublicKeyAlgorithm {
-		case ECDSAP256:
-			return sc.ec.VerifyASN1(parent.PublicKey, digest, c.Signature)
-		case ECDSAP384:
-			return sc.ec384.VerifyASN1(parent.PublicKey, digest, c.Signature)
-		case ECDSAP224, ECDSAP521:
-			return ErrUnsupported
-		}
-		return errKeyMismatch
-	case SHA256WithRSAPSS, SHA384WithRSAPSS, SHA512WithRSAPSS:
-		pss = true
-	}
-	if parent.PublicKeyAlgorithm != RSA {
-		return errKeyMismatch
-	}
-	if rsaBits(parent.PublicKey) < v.minRSA {
-		return errWeakRSA
-	}
-	digest := sc.hash(h, c.RawTBSCertificate)
-	if pss {
-		return sc.rsa.VerifyPSS(parent.PublicKey, parent.RSAExponent, h, digest, c.Signature)
-	}
-	return sc.rsa.VerifyPKCS1v15(parent.PublicKey, parent.RSAExponent, h, digest, c.Signature)
+	return v.verifySignature(parent, c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
 }
 
 // rsaBits is the bit length of big-endian modulus n.

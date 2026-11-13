@@ -198,9 +198,9 @@ func (d *Digest) Write(p []byte) (nn int, err error) {
 
 func (d *Digest) Sum(in []byte) []byte {
 	// Make a copy of d so that caller can keep writing and summing.
-	h, x, nx, n := d.h, d.x, d.nx, d.len
-	hash := d.checkSum()
-	d.h, d.x, d.nx, d.len = h, x, nx, n
+	h, x, nx, n := d.h, d.x, d.nx, d.len // lcryptogen: patch
+	hash := d.checkSum()                 // lcryptogen: patch
+	d.h, d.x, d.nx, d.len = h, x, nx, n  // lcryptogen: patch
 	return append(in, hash[:d.size]...)
 }
 

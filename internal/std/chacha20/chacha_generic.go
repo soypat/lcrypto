@@ -59,6 +59,8 @@ type Cipher struct {
 	p3, p7, p11, p15 uint32
 }
 
+// lcryptogen: patch removed upstream code
+
 // NewUnauthenticatedCipher creates a new ChaCha20 stream cipher with the given
 // 32 bytes key and a 12 or 24 bytes nonce. If a nonce of 24 bytes is provided,
 // the XChaCha20 construction will be used. It returns an error if key or nonce

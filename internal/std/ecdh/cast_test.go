@@ -44,15 +44,15 @@ func TestCAST(t *testing.T) {
 				0x83, 0x48, 0x40, 0x56, 0x69, 0xa1, 0x95, 0xfa,
 				0xc5, 0x35, 0x04, 0x06, 0xba, 0x76, 0xbc, 0xce,
 			}
-			var p nistec.P256Point
-			var s nistec.P256Scratch
-			if _, err := p.SetBytes(publicKey); err != nil {
-				return err
-			}
-			if _, err := p.ScalarMultScratch(&p, privateKey, &s); err != nil {
-				return err
-			}
-			got, err := p.BytesX()
+			var p nistec.P256Point                           // lcryptogen: patch
+			var s nistec.P256Scratch                         // lcryptogen: patch
+			if _, err := p.SetBytes(publicKey); err != nil { // lcryptogen: patch
+				return err // lcryptogen: patch
+			} // lcryptogen: patch
+			if _, err := p.ScalarMultScratch(&p, privateKey, &s); err != nil { // lcryptogen: patch
+				return err // lcryptogen: patch
+			} // lcryptogen: patch
+			got, err := p.BytesX() // lcryptogen: patch
 			if err != nil {
 				return err
 			}

@@ -21,16 +21,20 @@ func TestVerifierConfigure(t *testing.T) {
 		name string
 		cfg  lx509.VerifierConfig
 	}{
-		{"nil roots", lx509.VerifierConfig{Nanotime: clock}},
-		{"no roots", lx509.VerifierConfig{Roots: lt.Chain{}, Nanotime: clock}},
-		{"no clock", lx509.VerifierConfig{Roots: good}},
-		{"unparsable root", lx509.VerifierConfig{Roots: lt.Chain{root.DER, []byte{0x30, 0}}, Nanotime: clock}},
-		{"negative MaxPeerCerts", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxPeerCerts: -1}},
-		{"negative MaxChainLen", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxChainLen: -1}},
-		{"MaxChainLen over capacity", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxChainLen: lx509.MaxChainLen + 1}},
-		{"negative MaxSignatureChecks", lx509.VerifierConfig{Roots: good, Nanotime: clock, MaxSignatureChecks: -1}},
-		{"MinRSABits below rsa.MinBits", lx509.VerifierConfig{Roots: good, Nanotime: clock, MinRSABits: 512}},
-		{"MinRSABits above rsa.MaxBits", lx509.VerifierConfig{Roots: good, Nanotime: clock, MinRSABits: 8192}},
+		{"nil roots", lx509.VerifierConfig{Algorithms: allAlgorithms(), Nanotime: clock}},
+		{"no roots", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: lt.Chain{}, Nanotime: clock}},
+		{"no clock", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good}},
+		{"unparsable root", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: lt.Chain{root.DER, []byte{0x30, 0}}, Nanotime: clock}},
+		{"negative MaxPeerCerts", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MaxPeerCerts: -1}},
+		{"negative MaxChainLen", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MaxChainLen: -1}},
+		{"MaxChainLen over capacity", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MaxChainLen: lx509.MaxChainLen + 1}},
+		{"negative MaxSignatureChecks", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MaxSignatureChecks: -1}},
+		{"MinRSABits below rsa.MinBits", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MinRSABits: 512}},
+		{"MinRSABits above rsa.MaxBits", lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: good, Nanotime: clock, MinRSABits: 8192}},
+		{"no Algorithms", lx509.VerifierConfig{Roots: good, Nanotime: clock}},
+		{"nil Algorithm", lx509.VerifierConfig{Algorithms: []lx509.SignatureVerifier{nil}, Roots: good, Nanotime: clock}},
+		{"duplicate Algorithm", lx509.VerifierConfig{Algorithms: []lx509.SignatureVerifier{new(lx509.P256Verifier), new(lx509.P256Verifier)}, Roots: good, Nanotime: clock}},
+		{"unverifiable Algorithm", lx509.VerifierConfig{Algorithms: []lx509.SignatureVerifier{p521Verifier{}}, Roots: good, Nanotime: clock}},
 	} {
 		v := newVerifier(t, good, lt.Epoch, lx509.VerifierConfig{})
 		if err := v.Configure(tc.cfg); err == nil {
@@ -127,8 +131,8 @@ func TestConcurrentConfigure(t *testing.T) {
 			defer wg.Done()
 			for range 50 {
 				if i%2 == 0 {
-					cred.Configure(lx509.CredentialConfig{Chain: chain, Key: key})
-					v.Configure(lx509.VerifierConfig{Roots: roots, Nanotime: func() int64 { return lt.Epoch.UnixNano() }})
+					cred.Configure(lx509.CredentialConfig{Signers: allSigners(), Chain: chain, Key: key})
+					v.Configure(lx509.VerifierConfig{Algorithms: allAlgorithms(), Roots: roots, Nanotime: func() int64 { return lt.Epoch.UnixNano() }})
 					cred.Zeroize()
 					continue
 				}

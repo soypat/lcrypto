@@ -112,10 +112,24 @@ func alertOf(t testing.TB, err error) uint8 {
 	return a.Alert()
 }
 
-// newVerifier returns a Verifier configured with roots at time at, and limits of cfg.
+// allAlgorithms returns every built-in SignatureVerifier, not shared.
+func allAlgorithms() []lx509.SignatureVerifier {
+	return []lx509.SignatureVerifier{new(lx509.P256Verifier), new(lx509.P384Verifier), new(lx509.Ed25519Verifier), new(lx509.RSAVerifier)}
+}
+
+// allSigners returns every built-in KeySigner, not shared.
+func allSigners() []lx509.KeySigner {
+	return []lx509.KeySigner{new(lx509.P256Signer), new(lx509.P384Signer), new(lx509.Ed25519Signer)}
+}
+
+// newVerifier returns a Verifier configured with roots at time at, and limits
+// and Algorithms of cfg, all algorithms if none.
 func newVerifier(t testing.TB, roots lcrypto.CertChain, at time.Time, cfg lx509.VerifierConfig) *lx509.Verifier {
 	t.Helper()
 	cfg.Roots, cfg.Nanotime = roots, func() int64 { return at.UnixNano() }
+	if cfg.Algorithms == nil {
+		cfg.Algorithms = allAlgorithms()
+	}
 	v := new(lx509.Verifier)
 	if err := v.Configure(cfg); err != nil {
 		t.Fatal(err)

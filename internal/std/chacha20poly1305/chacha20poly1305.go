@@ -38,9 +38,9 @@ const (
 
 type chacha20poly1305 struct {
 	key     [KeySize]byte
-	stream  chacha20.Cipher
-	mac     poly1305.MAC
-	polyKey [32]byte
+	stream  chacha20.Cipher // lcryptogen: patch
+	mac     poly1305.MAC    // lcryptogen: patch
+	polyKey [32]byte        // lcryptogen: patch
 
 	scratch scratchChacha20poly1305
 }

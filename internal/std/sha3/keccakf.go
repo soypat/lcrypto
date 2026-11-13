@@ -45,21 +45,21 @@ var rc = [24]uint64{
 // keccakF1600Generic applies the Keccak permutation.
 func keccakF1600Generic(da *[200]byte) {
 	if cpu.BigEndian {
-		var a [25]uint64
+		var a [25]uint64 // lcryptogen: patch
 		for i := range a {
 			a[i] = byteorder.LEUint64(da[i*8:])
 		}
-		keccakF1600Words(&a)
+		keccakF1600Words(&a) // lcryptogen: patch
 		for i := range a {
 			byteorder.LEPutUint64(da[i*8:], a[i])
 		}
-		return
+		return // lcryptogen: patch
 	}
-	keccakF1600Words((*[25]uint64)(unsafe.Pointer(da)))
+	keccakF1600Words((*[25]uint64)(unsafe.Pointer(da))) // lcryptogen: patch
 }
 
 // keccakF1600Words applies the Keccak permutation to native-endian words.
-func keccakF1600Words(a *[25]uint64) {
+func keccakF1600Words(a *[25]uint64) { // lcryptogen: patch
 
 	// Implementation translated from Keccak-inplace.c
 	// in the keccak reference code.

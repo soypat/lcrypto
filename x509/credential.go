@@ -6,33 +6,25 @@ import (
 	"sync"
 
 	"github.com/soypat/lcrypto"
-	"github.com/soypat/lcrypto/ecdsa"
 	"github.com/soypat/lcrypto/ed25519"
 	"github.com/soypat/lcrypto/internal/std/cryptobyte"
 	"github.com/soypat/lcrypto/internal/std/cryptobyte/asn1"
-	"github.com/soypat/lcrypto/sha256"
-	"github.com/soypat/lcrypto/sha512"
 )
 
 // Credential implements [lcrypto.Credential] with an ECDSA P-256 or P-384 key
 // or an Ed25519 key, signing TLS 1.3 CertificateVerify with
-// ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384 or ed25519 as crypto/ecdsa and
-// crypto/ed25519 do, without allocating.
+// ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384 or ed25519 through the
+// [KeySigner] configured for the key, without allocating.
 //
 // The zero Credential has no key: call [Credential.Configure]. A Credential is
 // safe for concurrent use: calls, Configure included, are serialized over its
-// working memory, about 15 KiB.
+// working memory, about 0.3 KiB plus its Signers, 4 to 6 KiB each.
 type Credential struct {
 	mu     sync.Mutex
 	rand   io.Reader
 	chain  lcrypto.CertChain
 	scheme uint16
-	p256   ecdsa.P256Signer
-	p384   ecdsa.P384Signer
-	ed     ed25519.Signer
-	d256   sha256.Digest
-	d512   sha512.Digest
-	digest [64]byte
+	signer KeySigner   // The configured key's; nil when unkeyed.
 	leaf   Certificate // Scratch of Configure.
 }
 
@@ -53,13 +45,17 @@ type CredentialConfig struct {
 	// source still does not leak the key. Ed25519 signatures are always
 	// deterministic.
 	Rand io.Reader
+	// Signers sign with the leaf key: Configure uses the one for its
+	// PublicKeyAlgorithm, of ECDSAP256, ECDSAP384 and Ed25519. At least one is
+	// required. They must not be shared with another Credential.
+	Signers []KeySigner
 }
 
 // Configure installs cfg's chain and key, failing if the key is not the leaf
 // certificate's. On error c is left without a key.
 func (c *Credential) Configure(cfg CredentialConfig) error {
 	c.mu.Lock()
-	err := c.configure(cfg.Chain, cfg.Key)
+	err := c.configure(cfg.Chain, cfg.Key, cfg.Signers)
 	c.leaf = Certificate{}
 	if err != nil {
 		c.zeroize()
@@ -70,8 +66,27 @@ func (c *Credential) Configure(cfg CredentialConfig) error {
 	return err
 }
 
-func (c *Credential) configure(chain lcrypto.CertChain, keyDER []byte) error {
+func (c *Credential) configure(chain lcrypto.CertChain, keyDER []byte, signers []KeySigner) error {
 	c.zeroize()
+	if len(signers) == 0 {
+		return errSigners
+	}
+	var seen [MLDSA + 1]bool
+	for _, s := range signers {
+		if s == nil {
+			return errSigners
+		}
+		k := s.PublicKeyAlgorithm()
+		switch k {
+		case ECDSAP256, ECDSAP384, Ed25519:
+		default:
+			return errSigners
+		}
+		if seen[k] {
+			return errSigners
+		}
+		seen[k] = true
+	}
 	if chain == nil || chain.NumCerts() == 0 {
 		return errNoCerts
 	}
@@ -86,48 +101,47 @@ func (c *Credential) configure(chain lcrypto.CertChain, keyDER []byte) error {
 	if err != nil {
 		return err
 	}
-	var pub []byte
+	var scheme uint16
 	switch c.leaf.PublicKeyAlgorithm {
 	case Ed25519:
 		if !bytes.Equal(curve, oidPublicKeyEd25519) {
 			return errKeyCurve
 		}
-		if err = c.ed.SetSeed(d); err == nil {
-			pub, err = c.ed.PublicKey()
-		}
-		c.scheme = SchemeEd25519
+		scheme = SchemeEd25519
 	case ECDSAP256:
 		if curve != nil && !bytes.Equal(curve, oidCurveP256) || bytes.Equal(curve, oidPublicKeyEd25519) {
 			return errKeyCurve
 		}
-		if d, err = fitKey(d, 32); err == nil {
-			err = c.p256.SetKey(d)
-		}
-		if err == nil {
-			pub, err = c.p256.PublicKey()
-		}
-		c.scheme = SchemeECDSAP256SHA256
+		d, err = fitKey(d, 32)
+		scheme = SchemeECDSAP256SHA256
 	case ECDSAP384:
 		if curve != nil && !bytes.Equal(curve, oidCurveP384) || bytes.Equal(curve, oidPublicKeyEd25519) {
 			return errKeyCurve
 		}
-		if d, err = fitKey(d, 48); err == nil {
-			err = c.p384.SetKey(d)
+		d, err = fitKey(d, 48)
+		scheme = SchemeECDSAP384SHA384
+	}
+	if err != nil {
+		return err
+	}
+	var signer KeySigner
+	for _, s := range signers {
+		if s.PublicKeyAlgorithm() == c.leaf.PublicKeyAlgorithm {
+			signer = s
 		}
-		if err == nil {
-			pub, err = c.p384.PublicKey()
-		}
-		c.scheme = SchemeECDSAP384SHA384
-	default:
+	}
+	if signer == nil {
 		return errLeafKey
 	}
+	c.signer = signer // Set first so zeroize wipes a key that does not match.
+	pub, err := signer.SetKey(d)
 	if err != nil {
 		return err
 	}
 	if !bytes.Equal(pub, c.leaf.PublicKey) {
 		return errKeyPublic
 	}
-	c.chain = chain
+	c.chain, c.scheme = chain, scheme
 	return nil
 }
 
@@ -222,20 +236,7 @@ func (c *Credential) sign(sig, msg []byte, scheme uint16) (int, error) {
 	if scheme != c.scheme {
 		return 0, errSignScheme
 	}
-	if scheme == SchemeEd25519 {
-		if len(sig) < ed25519.SignatureSize {
-			return ed25519.SignatureSize, io.ErrShortBuffer
-		}
-		return ed25519.SignatureSize, c.ed.Sign(sig, msg)
-	}
-	if scheme == SchemeECDSAP256SHA256 {
-		c.d256.Init()
-		c.d256.Write(msg)
-		return c.p256.SignASN1(sig, c.d256.Sum(c.digest[:0]), c.rand)
-	}
-	c.d512.Init384()
-	c.d512.Write(msg)
-	return c.p384.SignASN1(sig, c.d512.Sum(c.digest[:0]), c.rand)
+	return c.signer.Sign(sig, msg, c.rand)
 }
 
 // Zeroize wipes the private key; Configure must be called before reuse.
@@ -247,12 +248,10 @@ func (c *Credential) Zeroize() {
 
 func (c *Credential) zeroize() {
 	c.chain, c.scheme, c.rand = nil, 0, nil
-	c.p256.Zeroize()
-	c.p384.Zeroize()
-	c.ed.Zeroize()
-	c.d256 = sha256.Digest{} // Zeroize panics on a never initialized SHA-512 Digest.
-	c.d512 = sha512.Digest{}
-	clear(c.digest[:])
+	if c.signer != nil {
+		c.signer.Zeroize()
+		c.signer = nil
+	}
 }
 
 // NumCerts implements [lcrypto.CertChain].

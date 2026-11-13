@@ -80,15 +80,15 @@ func ghash(g *GCM, out, H *[gcmBlockSize]byte, inputs ...[]byte) {
 	}
 
 	for _, input := range inputs {
-		for len(input) > 0 {
-			var block []byte
-			if len(input) >= gcmBlockSize {
-				block, input = input[:gcmBlockSize], input[gcmBlockSize:]
-			} else {
+		for len(input) > 0 { // lcryptogen: patch
+			var block []byte                // lcryptogen: patch
+			if len(input) >= gcmBlockSize { // lcryptogen: patch
+				block, input = input[:gcmBlockSize], input[gcmBlockSize:] // lcryptogen: patch
+			} else { // lcryptogen: patch
 				partialBlock := &g.scratch.partialBlock
 				*partialBlock = [gcmBlockSize]byte{}
 				copy(partialBlock[:], input)
-				block, input = partialBlock[:], nil
+				block, input = partialBlock[:], nil // lcryptogen: patch
 			}
 			for i := range 4 {
 				y[3-i] ^= byteorder.BEUint32(block[i*4 : (i*4)+4])

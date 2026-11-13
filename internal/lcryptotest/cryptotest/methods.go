@@ -25,7 +25,7 @@ import (
 // ms must be a pointer to a non-nil interface.
 func NoExtraMethods(t *testing.T, ms any, allowed ...string) {
 	t.Helper()
-	testenv.SkipIfTinyGo(t, "NoExtraMethods needs reflect.Type.Method")
+	testenv.SkipIfTinyGo(t, "NoExtraMethods needs reflect.Type.Method") // lcryptogen: patch
 	extraMethods, err := extraMethods(ms)
 	if err != nil {
 		t.Fatal(err)

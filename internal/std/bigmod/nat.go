@@ -64,14 +64,14 @@ type Nat struct {
 // preallocTarget is the size in bits of the numbers used to implement the most
 // common and most performant RSA key size. It's also enough to cover some of
 // the operations of key sizes up to 4096.
-const preallocTarget = 4096
+const preallocTarget = 4096 // lcryptogen: patch
 const preallocLimbs = (preallocTarget + _W - 1) / _W
 
 // NewNat returns a new nat with a size of zero, just like new(Nat), but with
 // the preallocated capacity to hold a number of up to preallocTarget bits.
 // NewNat inlines, so the allocation can live on the stack.
 func NewNat() *Nat {
-	return &Nat{}
+	return &Nat{} // lcryptogen: patch
 }
 
 // expand expands x to n limbs, leaving its value unchanged.
@@ -80,7 +80,7 @@ func (x *Nat) expand(n int) *Nat {
 		panic("bigmod: internal error: shrinking nat")
 	}
 	if len(x.limbs) < n {
-		panic(errNatTooLarge)
+		panic(errNatTooLarge) // lcryptogen: patch
 	}
 	extraLimbs := x.lim()[x.nlimbs:n]
 	clear(extraLimbs)
@@ -91,7 +91,7 @@ func (x *Nat) expand(n int) *Nat {
 // reset returns a zero nat of n limbs, reusing x's storage if n <= cap(x.limbs).
 func (x *Nat) reset(n int) *Nat {
 	if len(x.limbs) < n {
-		panic(errNatTooLarge)
+		panic(errNatTooLarge) // lcryptogen: patch
 	}
 	// Clear both the returned limbs and the previously used ones.
 	clear(x.lim()[:max(n, x.nlimbs)])
@@ -482,7 +482,7 @@ type Modulus struct {
 	m0inv uint // -nat.limbs[0]⁻¹ mod _W
 	rr    *Nat // R*R for montgomeryRepresentation
 
-	natStore Nat // nat of a Modulus set up by InitModulus.
+	natStore Nat // nat of a Modulus set up by InitModulus. // lcryptogen: patch
 
 	scratch scratchModulus
 }
@@ -807,6 +807,7 @@ func (x *Nat) montgomeryMul(a *Nat, b *Nat, m *Modulus) *Nat {
 		TArr := &m.scratch.T
 		*TArr = [preallocLimbs * 2]uint{}
 		T := TArr[:0]
+		// lcryptogen: patch removed upstream code
 		T = T[:n*2]
 
 		// This loop implements Word-by-Word Montgomery Multiplication, as
@@ -862,6 +863,7 @@ func (x *Nat) montgomeryMul(a *Nat, b *Nat, m *Modulus) *Nat {
 		copy(x.reset(n).lim(), T[n:])
 		x.maybeSubtractModulus(choice(c), m)
 
+		// lcryptogen: patch removed upstream code
 	}
 
 	return x
@@ -912,6 +914,7 @@ func (x *Nat) Mul(y *Nat, m *Modulus) *Nat {
 		// Attempt to use a stack-allocated backing array.
 		var TArr [preallocLimbs * 2]uint
 		T := TArr[:0]
+		// lcryptogen: patch removed upstream code
 		T = T[:n*2]
 
 		// T = x * y
@@ -925,6 +928,7 @@ func (x *Nat) Mul(y *Nat, m *Modulus) *Nat {
 
 		// The following specialized cases follow the exact same algorithm, but
 		// optimized for the sizes most used in RSA. See montgomeryMul for details.
+		// lcryptogen: patch removed upstream code
 	}
 }
 

@@ -39,7 +39,7 @@ type Point struct {
 
 type incomparable [0]func()
 
-func checkInitialized(p *Point) {
+func checkInitialized(p *Point) { // lcryptogen: patch
 	if p.x == (field.Element{}) && p.y == (field.Element{}) {
 		panic("edwards25519: use of uninitialized Point")
 	}
@@ -256,8 +256,8 @@ func (v *affineCached) FromP3(p *Point) *affineCached {
 
 // Add sets v = p + q, and returns v.
 func (v *Point) Add(p, q *Point) *Point {
-	checkInitialized(p)
-	checkInitialized(q)
+	checkInitialized(p) // lcryptogen: patch
+	checkInitialized(q) // lcryptogen: patch
 	qCached := new(projCached).FromP3(q)
 	result := new(projP1xP1).Add(p, qCached)
 	return v.fromP1xP1(result)
@@ -265,8 +265,8 @@ func (v *Point) Add(p, q *Point) *Point {
 
 // Subtract sets v = p - q, and returns v.
 func (v *Point) Subtract(p, q *Point) *Point {
-	checkInitialized(p)
-	checkInitialized(q)
+	checkInitialized(p) // lcryptogen: patch
+	checkInitialized(q) // lcryptogen: patch
 	qCached := new(projCached).FromP3(q)
 	result := new(projP1xP1).Sub(p, qCached)
 	return v.fromP1xP1(result)
@@ -384,8 +384,8 @@ func (v *Point) Negate(p *Point) *Point {
 
 // Equal returns 1 if v is equivalent to u, and 0 otherwise.
 func (v *Point) Equal(u *Point) int {
-	checkInitialized(v)
-	checkInitialized(u)
+	checkInitialized(v) // lcryptogen: patch
+	checkInitialized(u) // lcryptogen: patch
 
 	var t1, t2, t3, t4 field.Element
 	t1.Multiply(&v.x, &u.z)

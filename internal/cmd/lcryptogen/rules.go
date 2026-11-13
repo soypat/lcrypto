@@ -128,6 +128,8 @@ type pkgState struct {
 
 // applyPatches performs the text patches of spec on job.
 func (ps *pkgState) applyPatches(job *fileJob) error {
+	var spans [][2]int // Patched text in job.src, to watermark.
+	var old []string
 	for i, p := range ps.spec.Patches {
 		if p.File != job.name {
 			continue
@@ -156,11 +158,103 @@ func (ps *pkgState) applyPatches(job *fileJob) error {
 		if got := strings.Count(scope, p.Old); got != want {
 			return fmt.Errorf("%s: patch %d: %q found %d times, want %d", job.name, i, p.Old, got, want)
 		}
-		scope = strings.ReplaceAll(scope, p.Old, p.New)
-		job.src = slices.Concat(job.src[:lo], []byte(scope), job.src[hi:])
+		var b strings.Builder
+		var reps [][4]int // Old start and end, new start and end of each replacement.
+		for pos := 0; ; {
+			k := strings.Index(scope[pos:], p.Old)
+			if k < 0 {
+				b.WriteString(scope[pos:])
+				break
+			}
+			b.WriteString(scope[pos : pos+k])
+			start := lo + b.Len()
+			b.WriteString(p.New)
+			reps = append(reps, [4]int{lo + pos + k, lo + pos + k + len(p.Old), start, lo + b.Len()})
+			pos += k + len(p.Old)
+		}
+		// Marks wait until every patch is in: a later patch may match text
+		// around an earlier one. Move earlier spans past this patch's edits.
+		remap := func(x int, end bool) int {
+			delta := 0
+			for _, r := range reps {
+				if x <= r[0] {
+					break
+				}
+				if x < r[1] { // Inside replaced text: widen to its replacement.
+					if end {
+						return r[3]
+					}
+					return r[2]
+				}
+				delta = r[3] - r[1]
+			}
+			return x + delta
+		}
+		for j, sp := range spans {
+			spans[j] = [2]int{remap(sp[0], false), remap(sp[1], true)}
+		}
+		for _, r := range reps {
+			spans = append(spans, [2]int{r[2], r[3]})
+		}
+		old = append(old, p.Old)
+		job.src = slices.Concat(job.src[:lo], []byte(b.String()), job.src[hi:])
 		ps.patchHits[i]++
 	}
-	return nil
+	if len(spans) == 0 {
+		return nil
+	}
+	var err error
+	job.src, err = markPatched(job.src, spans, strings.Join(old, "\n"))
+	return err
+}
+
+// patchMark watermarks lines written by hand in the spec rather than ported from
+// upstream or produced by the mechanical rules: grep for it to review them all.
+const patchMark = "// lcryptogen: patch"
+
+// markPatched appends patchMark to every line of src overlapping one of spans,
+// the text a patch put in place of old. Comment lines, and lines whose patched
+// part old already held verbatim (but for spacing), are left unmarked. An
+// empty span, a deletion, gets a line of its own when it starts a line.
+func markPatched(src []byte, spans [][2]int, old string) ([]byte, error) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	kept := map[string]bool{}
+	for _, l := range strings.Split(old, "\n") {
+		kept[norm(l)] = true
+	}
+	var edits []edit
+	marked := map[int]bool{} // Line end offsets already marked.
+	for _, sp := range spans {
+		start, last := sp[0], sp[1]-1
+		if sp[0] == sp[1] {
+			ls := bytes.LastIndexByte(src[:start], '\n') + 1
+			if len(bytes.TrimSpace(src[ls:start])) == 0 {
+				edits = append(edits, edit{start: start, end: start, text: patchMark + " removed upstream code\n"})
+				continue
+			}
+			last = start // Mid-line deletion: mark the line it is on.
+		}
+		for off := start; ; {
+			ls := bytes.LastIndexByte(src[:off], '\n') + 1
+			le := bytes.IndexByte(src[off:], '\n')
+			if le < 0 {
+				le = len(src)
+			} else {
+				le += off
+			}
+			line := strings.TrimSpace(string(src[ls:le]))
+			part := norm(string(src[max(ls, sp[0]):min(le, sp[1])])) // What the patch wrote on this line.
+			if line != "" && !strings.HasPrefix(line, "//") && (sp[0] == sp[1] || !kept[part]) && !marked[le] {
+				marked[le] = true
+				edits = append(edits, edit{start: le, end: le, text: " " + patchMark})
+			}
+			if le >= last {
+				break
+			}
+			off = le + 1
+		}
+	}
+	return applyEdits(src, edits)
 }
 
 func declMatches(d ast.Decl, name string) bool {
