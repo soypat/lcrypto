@@ -29,7 +29,11 @@ func splitIRAM(spec *pkgSpec, name string, src []byte, hits map[string]int) (map
 		return nil, err
 	}
 	off := func(p token.Pos) int { return fset.Position(p).Offset }
-	var moved [][2]int
+	type span struct {
+		fn         string
+		start, end int
+	}
+	var moved []span
 	for _, d := range f.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || !slices.Contains(spec.IRAM, funcName(fd)) {
@@ -40,7 +44,7 @@ func splitIRAM(spec *pkgSpec, name string, src []byte, hits map[string]int) (map
 		if fd.Doc != nil {
 			start = fd.Doc.Pos()
 		}
-		moved = append(moved, [2]int{off(start), off(fd.End())})
+		moved = append(moved, span{funcName(fd), off(start), off(fd.End())})
 	}
 	if len(moved) == 0 {
 		return files, nil
@@ -48,13 +52,19 @@ func splitIRAM(spec *pkgSpec, name string, src []byte, hits map[string]int) (map
 	var rest, plain, iram bytes.Buffer
 	last := 0
 	for _, m := range moved {
-		rest.Write(src[last:m[0]])
-		last = m[1]
-		fn := src[m[0]:m[1]]
+		rest.Write(src[last:m.start])
+		last = m.end
+		fn := src[m.start:m.end]
 		plain.Write(fn)
 		plain.WriteString("\n\n")
 		doc, body := splitDoc(fn)
 		iram.Write(doc)
+		if call, ok := spec.IRAMBody[m.fn]; ok {
+			sig, _, _ := bytes.Cut(body, []byte("{\n"))
+			iram.Write(sig)
+			iram.WriteString("{\n\t" + call + "\n}\n\n")
+			continue
+		}
 		if len(doc) > 0 {
 			iram.WriteString("//\n")
 		}
