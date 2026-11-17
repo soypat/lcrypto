@@ -162,6 +162,7 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 		patchHits:  make([]int, len(spec.Patches)),
 		threadHits: make([]int, len(spec.Threads)),
 		keepHits:   map[string]int{},
+		iramHits:   map[string]int{},
 	}
 	var jobs []*fileJob
 	for _, e := range ents { // ReadDir sorts by name.
@@ -298,7 +299,18 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 		if err != nil {
 			return err
 		}
-		out[dst+"/"+job.name] = b
+		files, err := splitIRAM(spec, job.name, b, ps.iramHits)
+		if err != nil {
+			return err
+		}
+		for name, b := range files {
+			out[dst+"/"+name] = b
+		}
+	}
+	for _, name := range spec.IRAM {
+		if ps.iramHits[name] == 0 {
+			return fmt.Errorf("IRAM %q matched nothing", name)
+		}
 	}
 	return nil
 }
