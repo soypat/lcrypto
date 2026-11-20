@@ -299,13 +299,11 @@ func genPackage(ts *typedState, root string, spec *pkgSpec, out map[string][]byt
 		if err != nil {
 			return err
 		}
-		files, err := splitIRAM(spec, job.name, b, ps.iramHits)
+		b, err = markIRAM(spec, job.name, b, ps.iramHits)
 		if err != nil {
 			return err
 		}
-		for name, b := range files {
-			out[dst+"/"+name] = b
-		}
+		out[dst+"/"+job.name] = b
 	}
 	for _, name := range spec.IRAM {
 		if ps.iramHits[name] == 0 {

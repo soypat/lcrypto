@@ -48,10 +48,10 @@ type pkgSpec struct {
 	// Decls are declarations added to the package, i.e. a struct that Threads pass
 	// and Hoists fill with scratch space.
 	Decls []string
-	// IRAM are functions run from on-chip RAM on ESP targets, see [splitIRAM].
+	// IRAM are functions run from on-chip RAM on ESP targets, see [markIRAM].
 	IRAM []string
-	// IRAMBody replaces the body of an IRAM function on ESP targets, i.e. with a
-	// call to another IRAM function, so the two do not both take IRAM.
+	// IRAMBody replaces the body of an IRAM function, i.e. with a call to another
+	// IRAM function, so the two do not both take IRAM.
 	IRAMBody map[string]string
 }
 
