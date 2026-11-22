@@ -48,6 +48,11 @@ type pkgSpec struct {
 	// Decls are declarations added to the package, i.e. a struct that Threads pass
 	// and Hoists fill with scratch space.
 	Decls []string
+	// IRAM are functions run from on-chip RAM on ESP targets, see [markIRAM].
+	IRAM []string
+	// IRAMBody replaces the body of an IRAM function, i.e. with a call to another
+	// IRAM function, so the two do not both take IRAM.
+	IRAMBody map[string]string
 }
 
 // fieldArray turns slice field Field of struct Type into an array of Len
@@ -496,6 +501,12 @@ func keccakF1600Words(a *[25]uint64) {`,
 	{
 		Src: "go:crypto/internal/fips140/nistec/fiat", Dst: "fiat",
 		DropFiles: []string{"cast.go", "p224*.go", "p521*.go", "benchmark_test.go"}, // cast.go only imports the integrity check.
+		// The ESP32-C3 runs code from flash through a 16 KiB cache. These 26 KiB of
+		// unrolled code thrash it, which made P-384 ECDSA verify 12 times slower.
+		IRAM: []string{"p384Mul", "p384Square"},
+		// Square runs the same steps as Mul, so Mul does both and IRAM keeps 16 KiB
+		// instead of 28 KiB. P-384 verify on the ESP32-C3 was as fast as before.
+		IRAMBody: map[string]string{"p384Square": "p384Mul(out1, arg1, arg1)"},
 	},
 	{
 		Src: "go:crypto/internal/fips140/nistec", Dst: "nistec",

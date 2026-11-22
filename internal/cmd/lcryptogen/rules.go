@@ -119,6 +119,7 @@ type pkgState struct {
 	consts     map[string]bool   // Package-level constant names, for constant make lengths.
 	topNames   map[string]bool   // All package-level names, to avoid collisions.
 	dropHits   map[string]int    // DropDecls matches.
+	iramHits   map[string]int    // IRAM matches.
 	errVars    map[string]string // errors.New message -> hoisted var name.
 	errOrder   []string          // Messages in first-seen order.
 	patchHits  []int
